@@ -69,7 +69,7 @@ Future<HarnessReadyResult> waitForHarnessReady(
     return HarnessReadyResult._(
       readyLine: readyLine,
       stdout: stdoutBuffer.toString(),
-      _stderrBuffer: stderrBuffer,
+      stderrBuffer: stderrBuffer,
       stdoutSubscription: stdoutSubscription,
       stderrSubscription: stderrSubscription,
     );

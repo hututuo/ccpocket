@@ -9,7 +9,11 @@ import '../../models/messages.dart';
 import '../../services/bridge_service.dart';
 import '../session_list/cache/session_catalog_cache_repository.dart';
 import 'conversation_sync_trace.dart';
+import 'conversation_turns_page_load_result.dart';
 import 'latest_turn_repair_scheduler.dart';
+import 'older_turns_paging_lifecycle.dart';
+
+export 'conversation_turns_page_load_result.dart';
 
 abstract interface class ConversationContentSyncGateway {
   Stream<BridgeConnectionState> get connectionStatus;
@@ -175,24 +179,6 @@ class ConversationSyncCacheUpdate {
   final String? phase;
 }
 
-class ConversationTurnsPageLoadResult {
-  const ConversationTurnsPageLoadResult({
-    required this.loaded,
-    required this.hasMore,
-    this.latestTurnComplete,
-    this.repairObservation,
-  });
-
-  final bool loaded;
-  final bool hasMore;
-
-  /// Repair coverage is independent of accepting a readable summary page.
-  final bool? latestTurnComplete;
-
-  /// Local content/coverage identity, never a Provider or wire revision.
-  final String? repairObservation;
-}
-
 /// Maintains one foreground subscription to the Bridge-owned conversation
 /// scheduler.
 ///
@@ -226,15 +212,13 @@ class ConversationContentSyncService with WidgetsBindingObserver {
   final Map<String, _SnapshotStage> _stages = {};
   final Map<String, _ConversationCatalogBatchStage> _v2CatalogStages = {};
   final Map<String, _ConversationStatusBatchStage> _v2StatusStages = {};
-  final Map<String, _PendingTurnsPage> _pendingTurnsPages = {};
+  final _olderTurnsPaging = OlderTurnsPagingLifecycle();
   final Map<String, _PendingItemsPage> _pendingItemsPages = {};
   final Map<String, _PendingUserIndexPage> _pendingUserIndexPages = {};
   final Map<String, _PendingUserTurnDetailPage> _pendingUserTurnDetailPages =
       {};
   final Map<String, _PendingLatestTurnRepairPage>
   _pendingLatestTurnRepairPages = {};
-  final Map<String, Future<ConversationTurnsPageLoadResult>>
-  _historyPageFlights = {};
   final Map<String, Future<ConversationTurnsPageLoadResult>>
   _latestTurnRepairFlights = {};
   late final _latestTurnRepairScheduler = LatestTurnRepairScheduler(
@@ -391,12 +375,12 @@ class ConversationContentSyncService with WidgetsBindingObserver {
         'status': _v2StatusStages.length,
       },
       'pendingRequestCounts': <String, Object?>{
-        'turns': _pendingTurnsPages.length,
+        'turns': _olderTurnsPaging.pendingCount,
         'items': _pendingItemsPages.length,
         'userIndex': _pendingUserIndexPages.length,
         'userTurn': _pendingUserTurnDetailPages.length,
         'latestTurnRepair': _pendingLatestTurnRepairPages.length,
-        'historyPageFlights': _historyPageFlights.length,
+        'historyPageFlights': _olderTurnsPaging.flightCount,
         'latestTurnRepairFlights': _latestTurnRepairFlights.length,
         'automaticLatestTurnRepairs': _latestTurnRepairScheduler.pendingCount,
       },
@@ -1008,25 +992,18 @@ class ConversationContentSyncService with WidgetsBindingObserver {
     }
     final flightKey =
         '${_cacheTarget.fingerprint}\u0000$provider\u0000$providerSessionId';
-    final existing = _historyPageFlights[flightKey];
-    if (existing != null) return existing;
-    late final Future<ConversationTurnsPageLoadResult> flight;
-    flight =
-        _enqueueHistoryOperation(
-          flightKey,
-          () => _loadOlderTurnsWithRetry(
-            provider: provider,
-            providerSessionId: providerSessionId,
-            expectedDataSourceIdentity: expectedDataSourceIdentity,
-            limit: limit,
-          ),
-        ).whenComplete(() {
-          if (identical(_historyPageFlights[flightKey], flight)) {
-            _historyPageFlights.remove(flightKey);
-          }
-        });
-    _historyPageFlights[flightKey] = flight;
-    return flight;
+    return _olderTurnsPaging.runFlight(
+      flightKey,
+      () => _enqueueHistoryOperation(
+        flightKey,
+        () => _loadOlderTurnsWithRetry(
+          provider: provider,
+          providerSessionId: providerSessionId,
+          expectedDataSourceIdentity: expectedDataSourceIdentity,
+          limit: limit,
+        ),
+      ),
+    );
   }
 
   /// Loads the lightweight user-turn spine without downloading tools or full
@@ -1703,17 +1680,15 @@ class ConversationContentSyncService with WidgetsBindingObserver {
       throw const _ConversationPagingInterrupted();
     }
     final requestId = _nextRequestId('turns');
-    final completer = Completer<ConversationTurnsPageLoadResult>();
-    final pending = _PendingTurnsPage(
+    final pending = _olderTurnsPaging.begin(
+      requestId: requestId,
       generation: _generation,
       targetFingerprint: target.fingerprint,
       provider: provider,
       providerSessionId: providerSessionId,
       expectedRevision: snapshot.revision,
       expectedCursor: snapshot.turnsNextCursor,
-      completer: completer,
     );
-    _pendingTurnsPages[requestId] = pending;
     try {
       bridge.send(
         conversationSyncV2TurnsPage(
@@ -1728,12 +1703,10 @@ class ConversationContentSyncService with WidgetsBindingObserver {
           itemsView: 'summary',
         ),
       );
-      return await completer.future.timeout(const Duration(seconds: 15));
-    } finally {
-      if (identical(_pendingTurnsPages[requestId], pending)) {
-        _pendingTurnsPages.remove(requestId);
-      }
+    } catch (error, stackTrace) {
+      _olderTurnsPaging.fail(pending, error, stackTrace);
     }
+    return await pending.result;
   }
 
   Future<ConversationTurnsPageLoadResult> _repairLatestTurnGap({
@@ -2131,7 +2104,7 @@ class ConversationContentSyncService with WidgetsBindingObserver {
     _highestV2CommittedSequence = 0;
     _v2PriorityBootstrapComplete = false;
     _latestTurnRepairScheduler.clearAll();
-    _failPendingTurnsPages(const _ConversationPagingInterrupted());
+    _olderTurnsPaging.failAll(const _ConversationPagingInterrupted());
     _failPendingUserIndexPages(const _ConversationPagingInterrupted());
     _failPendingUserTurnDetailPages(const _ConversationPagingInterrupted());
     _failPendingItemsPages(
@@ -2953,7 +2926,7 @@ class ConversationContentSyncService with WidgetsBindingObserver {
           thread: event.target,
         );
         if (event.scope == 'thread' && event.target != null) {
-          _failPendingTurnsPagesForTarget(
+          _olderTurnsPaging.failTarget(
             generation: generation,
             targetFingerprint: target.fingerprint,
             provider: event.target!.provider,
@@ -3129,9 +3102,7 @@ class ConversationContentSyncService with WidgetsBindingObserver {
             }
           }
         } else {
-          final request = event.requestId == null
-              ? null
-              : _pendingTurnsPages[event.requestId!];
+          final request = _olderTurnsPaging.find(event.requestId);
           if (request != null &&
               request.generation == generation &&
               request.targetFingerprint == target.fingerprint &&
@@ -3139,11 +3110,11 @@ class ConversationContentSyncService with WidgetsBindingObserver {
               request.providerSessionId == event.providerSessionId) {
             if (event.nextCursor != null &&
                 event.nextCursor == request.expectedCursor) {
-              if (!request.completer.isCompleted) {
-                request.completer.completeError(
-                  StateError('Conversation history page repeated its cursor.'),
-                );
-              }
+              _olderTurnsPaging.fail(
+                request,
+                StateError('Conversation history page repeated its cursor.'),
+              );
+
               break;
             }
             ConversationHotWindowSnapshot? snapshot;
@@ -3161,24 +3132,22 @@ class ConversationContentSyncService with WidgetsBindingObserver {
               // A failure of one explicit history request is not a failure of
               // the subscription. Preserve the window/cursor and settle only
               // this caller, just as for latest-turn repairs.
-              if (!request.completer.isCompleted) {
-                request.completer.completeError(error, stackTrace);
-              }
+              _olderTurnsPaging.fail(request, error, stackTrace);
               break;
             }
-            if (!request.completer.isCompleted) {
-              if (snapshot == null) {
-                request.completer.completeError(
-                  const _ConversationPagingInterrupted(),
-                );
-              } else {
-                request.completer.complete(
-                  ConversationTurnsPageLoadResult(
-                    loaded: true,
-                    hasMore: event.nextCursor != null,
-                  ),
-                );
-              }
+            if (snapshot == null) {
+              _olderTurnsPaging.fail(
+                request,
+                const _ConversationPagingInterrupted(),
+              );
+            } else {
+              _olderTurnsPaging.complete(
+                request,
+                ConversationTurnsPageLoadResult(
+                  loaded: true,
+                  hasMore: event.nextCursor != null,
+                ),
+              );
             }
             if (snapshot != null && _isV2Current(event, generation, target)) {
               _publishCacheUpdate(
@@ -3354,11 +3323,10 @@ class ConversationContentSyncService with WidgetsBindingObserver {
       // These responses do not mutate the hot cache in this service. Their
       // sequence still participates in cumulative flow control.
       case ConversationSyncV2EventKind.error:
-        final pageRequest = event.requestId == null
-            ? null
-            : _pendingTurnsPages[event.requestId!];
-        if (pageRequest != null && !pageRequest.completer.isCompleted) {
-          pageRequest.completer.completeError(
+        final pageRequest = _olderTurnsPaging.find(event.requestId);
+        if (pageRequest != null) {
+          _olderTurnsPaging.fail(
+            pageRequest,
             StateError(event.error ?? 'Conversation history page failed.'),
           );
         }
@@ -3937,7 +3905,7 @@ class ConversationContentSyncService with WidgetsBindingObserver {
     _v2PriorityBootstrapComplete = false;
     _partialTimelineWireRevisions.clear();
     _latestTurnRepairScheduler.clearAll();
-    _failPendingTurnsPages(const _ConversationPagingInterrupted());
+    _olderTurnsPaging.failAll(const _ConversationPagingInterrupted());
     _failPendingUserIndexPages(const _ConversationPagingInterrupted());
     _failPendingUserTurnDetailPages(const _ConversationPagingInterrupted());
     _failPendingItemsPages(
@@ -4096,39 +4064,6 @@ class ConversationContentSyncService with WidgetsBindingObserver {
     ]);
   }
 
-  void _failPendingTurnsPages(Object error) {
-    for (final request in _pendingTurnsPages.values) {
-      if (!request.completer.isCompleted) {
-        request.completer.completeError(error);
-      }
-    }
-    _pendingTurnsPages.clear();
-  }
-
-  void _failPendingTurnsPagesForTarget({
-    required int generation,
-    required String targetFingerprint,
-    required String provider,
-    required String providerSessionId,
-    required Object error,
-  }) {
-    final requests = _pendingTurnsPages.entries
-        .where((entry) {
-          final request = entry.value;
-          return request.generation == generation &&
-              request.targetFingerprint == targetFingerprint &&
-              request.provider == provider &&
-              request.providerSessionId == providerSessionId;
-        })
-        .toList(growable: false);
-    for (final entry in requests) {
-      _pendingTurnsPages.remove(entry.key);
-      if (!entry.value.completer.isCompleted) {
-        entry.value.completer.completeError(error);
-      }
-    }
-  }
-
   void _failPendingUserIndexPages(Object error) {
     for (final request in _pendingUserIndexPages.values) {
       if (!request.completer.isCompleted) {
@@ -4178,7 +4113,7 @@ class ConversationContentSyncService with WidgetsBindingObserver {
     do {
       final flights = <Future<dynamic>>[
         _v2MutationTail,
-        ..._historyPageFlights.values,
+        ..._olderTurnsPaging.flights,
         ..._latestTurnRepairFlights.values,
         ..._historyOperationTails.values,
         ..._userIndexFlights.values,
@@ -4353,26 +4288,6 @@ class _ConversationStatusBatchStage {
       targetFingerprint == candidateTargetFingerprint &&
       statusState == event.statusState &&
       pageCount == event.pageCount;
-}
-
-class _PendingTurnsPage {
-  const _PendingTurnsPage({
-    required this.generation,
-    required this.targetFingerprint,
-    required this.provider,
-    required this.providerSessionId,
-    required this.expectedRevision,
-    required this.expectedCursor,
-    required this.completer,
-  });
-
-  final int generation;
-  final String targetFingerprint;
-  final String provider;
-  final String providerSessionId;
-  final String expectedRevision;
-  final String? expectedCursor;
-  final Completer<ConversationTurnsPageLoadResult> completer;
 }
 
 class _PendingUserIndexPage {

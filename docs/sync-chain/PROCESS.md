@@ -346,3 +346,27 @@ fixture 后续明确开始 shutdown，再释放 held replies，并拒绝往关�
 JavaScript fixture 语法检查 PASS；目标 analyze 无 error/warning，随后处理 helper 新增 info。
 下一步纯结构抽取：完整迁移 older-only flight/pending/deadline/settlement/cancel，
 保留 E013 行为、15 秒 deadline、8 秒订阅等待、最多两次尝试与共享 history serialization。
+
+## E015 — older-only 生命周期抽取与复审缺口
+
+父提交：`55d5deecccccb10a5ad35c25f11e324fcdc98b7b`。
+迁移完整 flight、pending immutable facts、15 秒 Timer、成功/失败/超时、scoped/global 取消与
+dispose 的 flight join 入口到 `OlderTurnsPagingLifecycle`。结果 DTO 原样迁移并由 Service export。
+Service 仍拥有 source/subscription fence、两次 attempt/8 秒等待、共享 history 串行、SQLite 和通知/ACK。
+
+新增 8 个 fake-clock 契约用例：15 秒边界、迟到回复、成功/失败计时器清理、原错误/stack、
+旧 handle 与同 ID 新 owner、跨 thread/source/generation/provider 的取消隔离、flight 合并/失败重试、
+同步 host error、取消后本地工作仍可 join。
+
+首次 extraction 检查 FAIL：E014 的测试 helper 构造器改用 private initializing formal 后，
+调用处未使用 Dart 对应的 public 参数名 `stderrBuffer`，导致黑盒编译失败；并非业务红灯。
+修正该参数名后 `b2-lifecycle-extraction-corrected`：81 tests PASS，含 4 项真实接收/原页面黑盒。
+对应失败日志、analyze error 和修正后的绿灯收据均保留。
+
+独立只读复审冻结 E013 源码，新增两项 P2：
+1. reset 清 pending 看不到正在读取快照/尚在共享队列中的旧 flight；旧 R/C 可在同订阅继续发送。
+2. Repository 的 prepend 在事务提交后还会读取 snapshot；若该读取失败，page-local catch
+   只抛错误、漏通知，可能让已经更新的 SQLite 与挂载视图暂时分歧。
+
+这两个缺口需要新的 red → fix checkpoint，不能藏在结构 diff 中。下一步先复现再修正；
+此提交仍不作为 B2 最终可用候选，全量与最终独立复审尚未运行。

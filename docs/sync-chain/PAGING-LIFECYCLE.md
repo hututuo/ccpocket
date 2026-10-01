@@ -5,7 +5,7 @@
 
 ## 当前路径与身份
 
-`CodexSessionScreen._load...` 调用 `SyncService.loadOlderTurns` 并提供页面 data-source identity。
+`CodexSessionScreen._loadOlderDurableHistory` 调用 `SyncService.loadOlderTurns` 并提供页面 data-source identity。
 Service 以 target/provider/session 合并 flight，交给与 latest repair 共用的
 `_enqueueHistoryOperation`，再从 SQLite 读取 revision/cursor。请求中传 subscription/requestId，
 等待表保存 generation、target/provider/session、expected revision/cursor 与 completer。
@@ -42,6 +42,11 @@ Repository 保留 revision/cursor 和内容预算的写入权威；不新增数�
 先在原路径补失败用例并修行为，再独立抽取。15 秒 response deadline、8 秒新订阅等待、
 最多两次 attempt、limit 1–20 都保持现状；策略调整需要另一个行为批。
 每个 promise/completer 只结算一次，计时器/等待表/flight 清理与创建必须一起移动。
+
+E015 已迁移到 `older_turns_paging_lifecycle.dart`；结果类型独立保存并由原 Service export，
+调用方 import 无需改变。dispose 从模块取得仍在执行的 flight，等待本地工作结束。
+独立复审指出两项仍需行为修正：reset 期间尚在读取/排队的操作，以及事务已提交后的
+snapshot read exception 通知。结构抽取 checkpoint 不代表这两项已经关闭。
 
 完成条件：定向 red → green；timer/cancel/旧结果归属保护；相同真实 Bridge/RPC/SQLite/原页面
 分页输入的内容与 cursor 一致；全 Mobile analyze/tests 与独立源码 review；更新过程账本与回退依赖。
