@@ -14,6 +14,8 @@ Service 以 target/provider/session 合并 flight，交给与 latest repair 共�
 Repository.prependConversationTurnsPage 以本地 expected revision/cursor 原子接受内容，
 Service 结算结果、原通知出口推进 epoch、最后累计 ACK；页面用原回调重读。
 source 是分区身份，focus 是页面意图；只读翻页不取得 Provider writer ownership。
+已经开始的本地 mutation 与 transport generation 是不同事实：同源订阅替换后，
+仍当前且未 dispose 的 cache partition 会收到本地更新，旧 generation 的 syncUpdates/ACK 仍被丢弃。
 
 ## 本批正确性契约
 
@@ -52,6 +54,8 @@ thread reset 失效同 target/provider/session 的 operation，保留 wire pendi
 没有永久 per-thread tombstone；operation 随 flight 完成回收，新调用取得新身份。
 异常路径复用已有 cache invalidation/epoch，传输当前性检查后通知观察者重读，保留原错误。
 这不声称事务一定提交；事务前异常时只会重读原窗口，不新增数据库权威或改变 Repository 接口。
+E019/E020 补齐提交期间订阅替换：上述异常路径和成功路径的本地通知改按当前 cache partition
+且未 dispose 检查；transport timeline/ACK 保持 generation 检查。其他 source / dispose 的保护也有回归。
 
 完成条件：定向 red → green；timer/cancel/旧结果归属保护；相同真实 Bridge/RPC/SQLite/原页面
 分页输入的内容与 cursor 一致；全 Mobile analyze/tests 与独立源码 review；更新过程账本与回退依赖。

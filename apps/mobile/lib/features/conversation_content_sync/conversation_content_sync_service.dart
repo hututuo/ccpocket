@@ -3142,7 +3142,8 @@ class ConversationContentSyncService with WidgetsBindingObserver {
               // does not prove rollback: invalidate the current observer so
               // any committed page becomes visible, preserving the original
               // error and keeping recovery local to this request.
-              if (_isV2Current(event, generation, target)) {
+              if (!_disposed &&
+                  target.fingerprint == _cacheTarget.fingerprint) {
                 _publishCacheInvalidation(
                   targetFingerprint: target.fingerprint,
                   provider: event.provider!,
@@ -3167,7 +3168,12 @@ class ConversationContentSyncService with WidgetsBindingObserver {
                 ),
               );
             }
-            if (snapshot != null && _isV2Current(event, generation, target)) {
+            // The local mutation was accepted before awaiting SQLite. A
+            // same-source subscription replacement cannot hide its commit
+            // from cache observers; transport facts keep their own fence.
+            if (snapshot != null &&
+                !_disposed &&
+                target.fingerprint == _cacheTarget.fingerprint) {
               _publishCacheUpdate(
                 ConversationContentCacheUpdate(
                   targetFingerprint: target.fingerprint,
@@ -3179,6 +3185,8 @@ class ConversationContentSyncService with WidgetsBindingObserver {
                       '${snapshot.cachedAt.microsecondsSinceEpoch}',
                 ),
               );
+            }
+            if (snapshot != null && _isV2Current(event, generation, target)) {
               publish = ConversationSyncCacheUpdate(
                 kind: ConversationSyncCacheUpdateKind.timeline,
                 targetFingerprint: target.fingerprint,

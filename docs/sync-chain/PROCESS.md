@@ -428,3 +428,20 @@ transport generation fence 都会压掉本地通知。replacement subscribe 的 
 `b2-red-post-commit-ownership`：4 PASS / 2 FAIL；两个 FAIL 分别是同源替换后的成功与失败读取，
 SQLite 已新增条目/cursor2，而观察者没有收到通知。source switch / dispose 的四项保护 PASS。
 这说明不能用全量绿灯覆盖尚未被原测试覆盖的时序；新的 red checkpoint 不作可用候选。
+
+## E020 — 缓存事实的分区通知与 transport 归属分别判断
+
+父提交：`9bb11a12950131001afcb453b72b0b0404aa98a5`（E019 红灯 checkpoint）。
+只改 older prepend 已进入本地 mutation 后的两个通知出口：success 与 commit/read exception。
+本地 epoch/updates 按目标 fingerprint 仍当前、Service 未 dispose 判断，允许同源订阅替换；
+transport timeline/syncUpdates/ACK 继续按原 `_isV2Current` 判断，不复活旧订阅。
+请求接受前的 source/subscription/sequence/request/SQLite revision/cursor fence 均保留。
+
+`b2-post-commit-ownership-green`：91 tests PASS，包含六种 post-commit interleaving、
+所有相关 Service/lifecycle/scheduler 及四个真实接收/原页面黑盒；同源两个 red 转绿，
+跨 source / dispose 不通知、旧 transport 不发布的保护未放宽。
+源码再次冻结后重跑 Mobile 全量；Bridge 产品、fixture、schema 自 E018 之后未变，
+已通过的 Bridge 全量/build/typecheck 不因单纯后续 Mobile 修改重复运行。
+独立最终复审将针对此修正与它影响的归属判断闭环。
+
+另补 C1 的具体接手页：优先审页面异步缓存重读生命周期，其产品代码尚未修改。
