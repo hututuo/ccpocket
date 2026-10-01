@@ -542,3 +542,15 @@ didUpdateWidget、runtime attachment 和 dispose 的读取归属；UI 布局和 
 `c1-preview-read-contract-compiled` 是缺 native/font test host 的 FAIL；二者保留，
 不当作产品 red。修正夹具之后才产生上面的确定性行为红灯。
 本 checkpoint 不作可用候选；先补错误出口来源归属，再抽取生命周期。
+
+## E024 — 读取错误补齐来源检查
+
+父 red checkpoint：`5d69872d87b7d42984032848814127e7e6b029e4`。
+只给页面 `_loadDurablePreview` 的 catch 增加与成功出口相同的 source conflict 检查；
+不变更数据库、revision、Service 通知或 Cubit。
+
+`c1-source-error-fence-green`：并发组合 41 PASS / 1 FAIL；六个新读取用例全部 PASS，
+旧来源 red 已转绿。失败是 full-page 黑盒的“完整中间过程折叠”等待超时，缓存已提交，
+并非新错误归属断言。保留失败和轨迹，不直接归类为偶发、也不删断言。
+同源码/diff 单独重放该黑盒 `c1-error-fence-full-page-isolated`：1 PASS，exit 0，12.030 秒。
+本批继续收拢读取状态；后续完整静态/全量门禁仍必须闭合并再次覆盖该黑盒。

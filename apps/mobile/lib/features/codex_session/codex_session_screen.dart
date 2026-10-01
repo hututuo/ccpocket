@@ -774,7 +774,12 @@ class _CodexSessionScreenState extends State<CodexSessionScreen> {
           .catchError((Object error) {
             debugPrint('Failed to load cached Codex preview: $error');
             if (loadGeneration != _cachedPreviewLoadGeneration) return;
-            if (!mounted || widget.durableProviderSessionId != durableId) {
+            if (!mounted ||
+                widget.durableProviderSessionId != durableId ||
+                sync.hasAuthoritativeDataSourceConflict(
+                  _dataSourceIdentity,
+                  provider: Provider.codex.value,
+                )) {
               return;
             }
             if (currentCacheCommitEpoch() != cacheCommitEpoch) {
