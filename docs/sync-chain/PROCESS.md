@@ -296,3 +296,13 @@ UI 产品行为、其他四种分页和自动 latest repair 策略不在本批�
 身份、事务与通知继续由原 owner 判定；接口/终态和后续测试入口见 PAGING-LIFECYCLE。
 CodeGraph 此工作树此前已确认未索引，本批仍用实际源码；没有自行初始化索引。
 独立只读 worker 仅盘点现有黑盒夹具，未修改、测试或启动任何服务。
+
+## E012 — B2 三个确定性红灯
+
+父提交：`ad9765747460b93a856526de78215730a02796e7`（E011）。业务源码未变。
+新增 Service 用例共用真实 SQLite bootstrap / Provider page DTO；只在一次 prepend 调用边界
+注入 DB exception，不模拟本地窗口内容。`b2-red-paging-boundaries.json/.log`：3 FAIL、exit 1。
+
+失败事实：请求级 commit exception 触发全订阅 unsubscribe；repeated non-null cursor 被当作
+loaded=true 接受；thread reset 后原 attempt 未结算。不是编译/环境失败。
+接下来只修 owning path 的错误结算、游标进度与该 thread 的取消，独立行为提交后才抽取。

@@ -2274,6 +2274,180 @@ void main() {
     );
   });
 
+  test('older paging commit failures stay local to the request', () async {
+    await service.dispose();
+    await repository.close();
+    final failing = _FailingOlderPageRepository(
+      SessionCatalogCacheDatabase(
+        databasePath: path.join(temporaryDirectory.path, 'older-page-error.db'),
+        openDatabase: openFfi,
+      ),
+    );
+    repository = failing;
+    gateway.supportsConversationSyncV2 = true;
+    service = ConversationContentSyncService(bridge: gateway, cache: repository)
+      ..start(initialLifecycleState: AppLifecycleState.resumed);
+    const threadId = 'older-commit-error';
+    final subscriptionId = await _bootstrapOlderPage(gateway, threadId);
+    final before = (await service.loadCachedWindow(
+      provider: 'codex',
+      providerSessionId: threadId,
+    ))!;
+    Object? failure;
+    final load = service
+        .loadOlderTurns(provider: 'codex', providerSessionId: threadId)
+        .then<void>(
+          (_) => fail('A failed transaction cannot report loaded.'),
+          onError: (Object error) => failure = error,
+        );
+    final request = await gateway.nextOutgoing('conversation_turns_page');
+    gateway.addEvent(
+      _olderPageReply(
+        subscriptionId: subscriptionId,
+        threadId: threadId,
+        requestId: request['requestId']! as String,
+        sequence: 3,
+        nextCursor: 'older-page-2',
+      ),
+    );
+    await failing.attempted.future;
+    await pumpEventQueue();
+    expect(
+      gateway.sentTypes,
+      isNot(contains('conversation_sync_unsubscribe')),
+      reason:
+          'A page-local database failure cannot dismantle the live subscription.',
+    );
+    await load;
+    expect(failure, same(failing.failure));
+    expect(
+      (await gateway.nextOutgoing('conversation_sync_ack'))['sequence'],
+      3,
+    );
+    final after = (await service.loadCachedWindow(
+      provider: 'codex',
+      providerSessionId: threadId,
+    ))!;
+    expect(
+      after.entries.map((entry) => entry.entryId),
+      before.entries.map((entry) => entry.entryId),
+    );
+    expect(after.turnsNextCursor, before.turnsNextCursor);
+  });
+
+  test(
+    'older paging rejects a repeated non-null cursor before commit',
+    () async {
+      await service.dispose();
+      gateway.supportsConversationSyncV2 = true;
+      service = ConversationContentSyncService(
+        bridge: gateway,
+        cache: repository,
+      )..start(initialLifecycleState: AppLifecycleState.resumed);
+      const threadId = 'older-repeated-cursor';
+      final subscriptionId = await _bootstrapOlderPage(gateway, threadId);
+      final load = service.loadOlderTurns(
+        provider: 'codex',
+        providerSessionId: threadId,
+      );
+      final rejected = expectLater(load, throwsA(isA<StateError>()));
+      final request = await gateway.nextOutgoing('conversation_turns_page');
+      gateway.addEvent(
+        _olderPageReply(
+          subscriptionId: subscriptionId,
+          threadId: threadId,
+          requestId: request['requestId']! as String,
+          sequence: 3,
+          nextCursor: 'older-page-1',
+        ),
+      );
+      await rejected;
+      expect(
+        (await gateway.nextOutgoing('conversation_sync_ack'))['sequence'],
+        3,
+      );
+      final after = (await service.loadCachedWindow(
+        provider: 'codex',
+        providerSessionId: threadId,
+      ))!;
+      expect(after.entries.single.entryId, 'older-retained-$threadId');
+      expect(after.turnsNextCursor, 'older-page-1');
+      expect(
+        gateway.sentTypes,
+        isNot(contains('conversation_sync_unsubscribe')),
+      );
+    },
+  );
+
+  test(
+    'thread reset retires the old older-page request before its reply',
+    () async {
+      await service.dispose();
+      gateway.supportsConversationSyncV2 = true;
+      service = ConversationContentSyncService(
+        bridge: gateway,
+        cache: repository,
+      )..start(initialLifecycleState: AppLifecycleState.resumed);
+      const threadId = 'older-reset';
+      final subscriptionId = await _bootstrapOlderPage(gateway, threadId);
+      Object? failure;
+      final load = service
+          .loadOlderTurns(provider: 'codex', providerSessionId: threadId)
+          .then<void>(
+            (_) => fail('A reset attempt cannot report loaded.'),
+            onError: (Object error) => failure = error,
+          );
+      final request = await gateway.nextOutgoing('conversation_turns_page');
+      gateway.addEvent(
+        ConversationSyncV2EventMessage(
+          event: ConversationSyncV2EventKind.syncReset,
+          subscriptionId: subscriptionId,
+          bridgeInstanceId: 'bridge-1',
+          codexSourceId: 'codex-home-a',
+          batchId: 'older-reset',
+          sequence: 3,
+          scope: 'thread',
+          target: const ConversationSyncV2Target(
+            provider: 'codex',
+            providerSessionId: threadId,
+          ),
+        ),
+      );
+      await gateway.nextOutgoing('conversation_sync_ack');
+      await pumpEventQueue();
+      expect(
+        failure,
+        isA<StateError>(),
+        reason:
+            'The reset must settle the obsolete attempt without waiting for its deadline.',
+      );
+      await load;
+      gateway.addEvent(
+        _olderPageReply(
+          subscriptionId: subscriptionId,
+          threadId: threadId,
+          requestId: request['requestId']! as String,
+          sequence: 4,
+          nextCursor: null,
+        ),
+      );
+      expect(
+        (await gateway.nextOutgoing('conversation_sync_ack'))['sequence'],
+        4,
+      );
+      final after = (await service.loadCachedWindow(
+        provider: 'codex',
+        providerSessionId: threadId,
+      ))!;
+      expect(after.entries.single.entryId, 'older-retained-$threadId');
+      expect(after.turnsNextCursor, 'older-page-1');
+      expect(
+        gateway.sentTypes.where((type) => type == 'conversation_turns_page'),
+        hasLength(1),
+      );
+    },
+  );
+
   test(
     'loads and reuses a lightweight user index without tool payloads',
     () async {
@@ -6321,6 +6495,83 @@ void main() {
   });
 }
 
+Future<String> _bootstrapOlderPage(
+  FakeConversationContentGateway gateway,
+  String threadId,
+) async {
+  final subscribe = await gateway.nextOutgoing('conversation_sync_subscribe');
+  final subscriptionId = subscribe['requestId']! as String;
+  gateway.addEvent(
+    ConversationSyncV2EventMessage(
+      event: ConversationSyncV2EventKind.syncBegin,
+      subscriptionId: subscriptionId,
+      bridgeInstanceId: 'bridge-1',
+      codexSourceId: 'codex-home-a',
+      batchId: 'older-page',
+      sequence: 1,
+      requestId: subscriptionId,
+      catalogState: 'older-catalog',
+      statusState: 'older-status',
+    ),
+  );
+  await gateway.nextOutgoing('conversation_sync_ack');
+  gateway.addEvent(
+    ConversationSyncV2EventMessage(
+      event: ConversationSyncV2EventKind.timelinePage,
+      subscriptionId: subscriptionId,
+      bridgeInstanceId: 'bridge-1',
+      codexSourceId: 'codex-home-a',
+      batchId: 'older-page',
+      sequence: 2,
+      provider: 'codex',
+      providerSessionId: threadId,
+      revision: 'older-canonical',
+      mode: 'snapshot',
+      pageIndex: 0,
+      pageCount: 1,
+      entries: [_wireEntry('older-retained-$threadId', 0)],
+      hasEarlier: true,
+      turnsNextCursor: 'older-page-1',
+      sourceEntryCount: 2,
+    ),
+  );
+  await gateway.nextOutgoing('conversation_sync_ack');
+  return subscriptionId;
+}
+
+ConversationSyncV2EventMessage _olderPageReply({
+  required String subscriptionId,
+  required String threadId,
+  required String requestId,
+  required int sequence,
+  required String? nextCursor,
+}) => ConversationSyncV2EventMessage(
+  event: ConversationSyncV2EventKind.turnsPageResponse,
+  subscriptionId: subscriptionId,
+  bridgeInstanceId: 'bridge-1',
+  codexSourceId: 'codex-home-a',
+  batchId: 'older-page',
+  sequence: sequence,
+  requestId: requestId,
+  provider: 'codex',
+  providerSessionId: threadId,
+  data: const [
+    {
+      'turnId': 'older-provider-turn',
+      'messages': [
+        {
+          'type': 'user_input',
+          'text': 'Older authoritative prompt',
+          'userMessageUuid': 'older-provider-user',
+        },
+      ],
+      'itemCount': 1,
+      'itemsView': 'summary',
+    },
+  ],
+  nextCursor: nextCursor,
+);
+
 Future<String> _bootstrapTurnsPageGap(
   FakeConversationContentGateway gateway,
   String threadId,
@@ -6614,6 +6865,27 @@ class _FailingCatalogRepository extends SessionCatalogCacheRepository {
   Future<void> clearTarget(SessionCatalogCacheTarget target) {
     clearTargetCalls += 1;
     return super.clearTarget(target);
+  }
+}
+
+class _FailingOlderPageRepository extends SessionCatalogCacheRepository {
+  _FailingOlderPageRepository(super.database);
+
+  final failure = StateError('injected older-page transaction failure');
+  final attempted = Completer<void>();
+
+  @override
+  Future<ConversationHotWindowSnapshot?> prependConversationTurnsPage({
+    required SessionCatalogCacheTarget target,
+    required String provider,
+    required String providerSessionId,
+    required String expectedRevision,
+    required String? expectedCursor,
+    required List<Map<String, dynamic>> rawMessages,
+    required String? nextCursor,
+  }) async {
+    attempted.complete();
+    throw failure;
   }
 }
 
