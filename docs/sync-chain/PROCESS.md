@@ -554,3 +554,16 @@ didUpdateWidget、runtime attachment 和 dispose 的读取归属；UI 布局和 
 并非新错误归属断言。保留失败和轨迹，不直接归类为偶发、也不删断言。
 同源码/diff 单独重放该黑盒 `c1-error-fence-full-page-isolated`：1 PASS，exit 0，12.030 秒。
 本批继续收拢读取状态；后续完整静态/全量门禁仍必须闭合并再次覆盖该黑盒。
+
+## E025 — 冻结读取契约与结构边界
+
+父行为修复：`722e753f4ee422f336e658ad2560ecfb1d0df686`。
+额外覆盖 dirty 旧读取抛错、legacy empty、dispose 后成功/error；仍经原 Service 事件处理、
+事务与通知。legacy 使用原 v1 snapshot begin/page/complete 及 ACK，
+不以 fake epoch 或手工 UI history 代替旧 Bridge 兼容路径。
+`c1-expanded-preview-contract`：10 个真实 SQLite/原页面用例全部 PASS，exit 0，7.130 秒。
+
+抽取设计见 PREVIEW-READ-LIFECYCLE：纯同步 helper 拥有 active read ticket、dirty 合并和 invalidate/dispose；
+页面继续获取目标/epoch/SQLite、核对来源和应用结果。success 与 error 共用一次接受判定，
+旧 ticket 的 finally 不得清理新 ticket。已显示窗口、错误提示和 retry 仍由页面 owning path 管理。
+先提交测试与接口边界，再迁移原有全部读取接点，不把整页/Cubit/Repository 传给模块。

@@ -57,40 +57,48 @@ void main() {
     });
   });
 
-  testWidgets('SQLite commits coalesce without flashing an obsolete window', (
-    tester,
-  ) async {
-    await _withPreview(tester, (fixture) async {
-      await fixture.commit('thread', 'initial', 'Obsolete window');
-      final read = fixture.sync.holdNextRead();
-      await fixture.mount('thread');
-      await fixture.waitFor(() => read.arrived.isCompleted);
-      expect(read.snapshot?.revision, 'initial');
+  for (final failObsoleteRead in [false, true]) {
+    testWidgets(
+      'SQLite commits coalesce after an obsolete ${failObsoleteRead ? 'error' : 'window'}',
+      (tester) async {
+        await _withPreview(tester, (fixture) async {
+          await fixture.commit('thread', 'initial', 'Obsolete window');
+          final read = fixture.sync.holdNextRead();
+          await fixture.mount('thread');
+          await fixture.waitFor(() => read.arrived.isCompleted);
+          expect(read.snapshot?.revision, 'initial');
 
-      for (var index = 1; index <= 4; index++) {
-        await fixture.commit(
-          'thread',
-          'next-$index',
-          'Committed window $index',
-        );
-      }
-      expect(fixture.sync.readCalls, 1);
-      read.release();
-      await fixture.visible('Committed window 4', forbidden: 'Obsolete window');
-      await tester.pump(const Duration(milliseconds: 50));
-      expect(fixture.sync.readCalls, 2);
-      final cached = await fixture.cached('thread');
-      expect(cached?.revision, 'next-4');
-      expect(cached?.entries.single.entryId, 'user:thread:next-4');
-      expect(
-        fixture.cubit().state.entries.whereType<UserChatEntry>().map(
-          (entry) => entry.messageUuid,
-        ),
-        ['user:thread:next-4'],
-      );
-    });
-  });
-
+          for (var index = 1; index <= 4; index++) {
+            await fixture.commit(
+              'thread',
+              'next-$index',
+              'Committed window $index',
+            );
+          }
+          expect(fixture.sync.readCalls, 1);
+          read.release(
+            error: failObsoleteRead ? StateError('obsolete error') : null,
+          );
+          await fixture.visible(
+            'Committed window 4',
+            forbidden: 'Obsolete window',
+          );
+          expect(find.byType(SnackBar), findsNothing);
+          await tester.pump(const Duration(milliseconds: 50));
+          expect(fixture.sync.readCalls, 2);
+          final cached = await fixture.cached('thread');
+          expect(cached?.revision, 'next-4');
+          expect(cached?.entries.single.entryId, 'user:thread:next-4');
+          expect(
+            fixture.cubit().state.entries.whereType<UserChatEntry>().map(
+              (entry) => entry.messageUuid,
+            ),
+            ['user:thread:next-4'],
+          );
+        });
+      },
+    );
+  }
   for (final failOldRead in [false, true]) {
     testWidgets(
       'old thread ${failOldRead ? 'error' : 'completion'} cannot retire a new read',
@@ -173,17 +181,56 @@ void main() {
       });
     },
   );
+  testWidgets('a legacy empty SQLite refresh preserves last readable content', (
+    tester,
+  ) async {
+    await _withPreview(tester, (fixture) async {
+      await fixture.commit('thread', 'initial', 'Readable legacy window');
+      await fixture.mount('thread');
+      await fixture.visible('Readable legacy window');
+      await fixture.commit('thread', 'empty', null);
+      await fixture.waitFor(() => fixture.sync.readCalls == 2);
+      await tester.pump();
+      expect((await fixture.cached('thread'))?.entries, isEmpty);
+      expect(find.text('Readable legacy window'), findsOneWidget);
+      expect(
+        fixture.cubit().state.entries.whereType<UserChatEntry>(),
+        hasLength(1),
+      );
+    }, v2: false);
+  });
+
+  for (final failRead in [false, true]) {
+    testWidgets(
+      'an unmounted page ignores a pending ${failRead ? 'error' : 'window'}',
+      (tester) async {
+        await _withPreview(tester, (fixture) async {
+          await fixture.commit('thread', 'initial', 'Disposed preview');
+          final read = fixture.sync.holdNextRead();
+          await fixture.mount('thread');
+          await fixture.waitFor(() => read.arrived.isCompleted);
+          await tester.pumpWidget(const SizedBox.shrink());
+          read.release(error: failRead ? StateError('disposed read') : null);
+          await fixture.waitFor(() => read.finished.isCompleted);
+          expect(find.byType(SnackBar), findsNothing);
+          expect(fixture.sync.readCalls, 1);
+          expect(tester.takeException(), isNull);
+        });
+      },
+    );
+  }
 }
 
 Future<void> _withPreview(
   WidgetTester tester,
-  Future<void> Function(_PreviewFixture) body,
-) async {
+  Future<void> Function(_PreviewFixture) body, {
+  bool v2 = true,
+}) async {
   await tester.binding.setSurfaceSize(const Size(430, 1200));
   addTearDown(() => tester.binding.setSurfaceSize(null));
   await tester.runAsync(() async {
     await installPagePlatformServices();
-    final fixture = await _PreviewFixture.create(tester);
+    final fixture = await _PreviewFixture.create(tester, v2: v2);
     try {
       await body(fixture);
     } finally {
@@ -210,9 +257,12 @@ class _PreviewFixture {
   late String subscription;
   var sequence = 0;
 
-  static Future<_PreviewFixture> create(WidgetTester tester) async {
+  static Future<_PreviewFixture> create(
+    WidgetTester tester, {
+    required bool v2,
+  }) async {
     final directory = await Directory.systemTemp.createTemp('ccpocket_read_');
-    final bridge = _PreviewBridge()
+    final bridge = _PreviewBridge(v2)
       ..authenticatedBridgeInstanceId = 'bridge-read'
       ..authenticatedCodexSourceId = 'source-a';
     final repository = SessionCatalogCacheRepository(
@@ -223,21 +273,34 @@ class _PreviewFixture {
       ),
     );
     final fixture = _PreviewFixture(tester, directory, bridge, repository);
+    final subscribeType = v2
+        ? 'conversation_sync_subscribe'
+        : 'conversation_content_subscribe';
     await fixture.waitFor(
       () => bridge.sentMessages.any(
-        (message) =>
-            _messageJson(message)['type'] == 'conversation_sync_subscribe',
+        (message) => _messageJson(message)['type'] == subscribeType,
       ),
     );
     fixture.subscription =
         _messageJson(
               bridge.sentMessages.firstWhere(
-                (message) =>
-                    _messageJson(message)['type'] ==
-                    'conversation_sync_subscribe',
+                (message) => _messageJson(message)['type'] == subscribeType,
               ),
             )['requestId']
             as String;
+    if (!v2) {
+      bridge.emitLocalFeatureMessage(
+        ConversationContentEventMessage(
+          event: ConversationContentEventKind.subscribed,
+          subscriptionId: fixture.subscription,
+          requestId: fixture.subscription,
+          bridgeInstanceId: bridge.bridgeInstanceId!,
+          hotConversationLimit: 10,
+        ),
+      );
+      await tester.pump();
+      return fixture;
+    }
     bridge.emitLocalFeatureMessage(
       ConversationSyncV2EventMessage(
         event: ConversationSyncV2EventKind.syncBegin,
@@ -256,6 +319,10 @@ class _PreviewFixture {
   }
 
   Future<void> commit(String thread, String revision, String? text) async {
+    if (!bridge.v2) {
+      await _commitLegacy(thread, revision, text);
+      return;
+    }
     bridge.emitLocalFeatureMessage(
       ConversationSyncV2EventMessage(
         event: ConversationSyncV2EventKind.timelinePage,
@@ -292,6 +359,60 @@ class _PreviewFixture {
       ),
     );
     await ack();
+    expect((await cached(thread))?.revision, revision);
+    await tester.pump();
+  }
+
+  Future<void> _commitLegacy(
+    String thread,
+    String revision,
+    String? text,
+  ) async {
+    final entries = text == null
+        ? <ConversationContentWireEntry>[]
+        : [
+            ConversationContentWireEntry(
+              entryId: 'user:$thread:$revision',
+              index: 0,
+              contentHash: 'hash:$revision',
+              rawMessage: {
+                'type': 'user_input',
+                'text': text,
+                'userMessageUuid': 'user:$thread:$revision',
+              },
+            ),
+          ];
+    for (final event in [
+      ConversationContentEventKind.snapshotBegin,
+      ConversationContentEventKind.snapshotPage,
+      ConversationContentEventKind.snapshotComplete,
+    ]) {
+      bridge.emitLocalFeatureMessage(
+        ConversationContentEventMessage(
+          event: event,
+          subscriptionId: subscription,
+          bridgeInstanceId: identity.bridgeInstanceId!,
+          provider: 'codex',
+          providerSessionId: thread,
+          revision: revision,
+          entryCount: entries.length,
+          pageCount: 1,
+          pageIndex: 0,
+          hasEarlier: false,
+          sourceEntryCount: entries.length,
+          entries: event == ConversationContentEventKind.snapshotPage
+              ? entries
+              : const [],
+        ),
+      );
+    }
+    await waitFor(
+      () => bridge.sentMessages.any((message) {
+        final json = _messageJson(message);
+        return json['type'] == 'conversation_content_ack' &&
+            json['revision'] == revision;
+      }),
+    );
     expect((await cached(thread))?.revision, revision);
     await tester.pump();
   }
@@ -365,13 +486,18 @@ Map<String, dynamic> _messageJson(ClientMessage message) =>
     jsonDecode(message.toJson()) as Map<String, dynamic>;
 
 class _PreviewBridge extends MockBridgeService {
+  _PreviewBridge(this.v2);
+  final bool v2;
   @override
   BridgeConnectionState get currentBridgeConnectionState => connected
       ? BridgeConnectionState.connected
       : BridgeConnectionState.disconnected;
 
   @override
-  bool get supportsConversationSyncV2 => true;
+  bool get supportsConversationSyncV2 => v2;
+
+  @override
+  bool get supportsConversationContentEvents => true;
 }
 
 class _HeldRead {
