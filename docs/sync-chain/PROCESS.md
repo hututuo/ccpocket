@@ -401,3 +401,30 @@ older prepend 的 catch 保留原 error/stack，并在 transport 当前时复用
 修正后的 `b2-review-boundaries-green`：81 related tests PASS（含 E016 三个红灯，9 个 lifecycle tests）。
 `b2-review-boundaries-analyze`：exit 0、0 error/warning；一条既有 Service info 被重复列出两次。
 此时准备冻结源码进入全量与最终独立复审；源码门禁、真实 Provider、设备和生产仍分别判断。
+
+## E018 — 第一轮 B2 全量门禁与残余 review
+
+冻结源码：`67fbef1ac412994e64bb62e478d1a720be373ef1`，启动时 clean。
+`b2-final-full-mobile`：3273 PASS / 4 SKIPPED，exit 0；`b2-final-full-analyze`：0 error/warning，
+1017 info，与 E010 完整诊断按 severity/file/text（保留重复数量、忽略迁移后的行列）比对无增减，
+见 `b2-analysis-baseline-comparison.json`。format 7 files / 0 changed。
+Bridge build/typecheck PASS；`b2-final-full-bridge-corrected`：2546 PASS / 1 SKIPPED、124 files PASS。
+首次 Bridge 命令指向 root 的 vitest 而实际安装在 workspace，MODULE_NOT_FOUND、exit 1；
+路径修正后全量通过；这次命令失败与所有先前失败收据保留。
+
+独立只读 review 仍有 1 项 P2，所以此绿灯源码不作为最终候选：
+已经进入 older prepend 的本地提交若与同源订阅替换交错，无论后续 snapshot 成功或失败，
+transport generation fence 都会压掉本地通知。replacement subscribe 的 metadata 本身不重读页面。
+下一步针对这个实际时序补 red，通知缓存事实按 partition/current source/dispose 归属检查，
+旧 transport 的 ACK/syncUpdates 仍按原 generation 处理，不复活旧订阅。
+
+## E019 — 已提交事实与订阅代次交错的红灯
+
+父提交：`67fbef1ac412994e64bb62e478d1a720be373ef1`。产品源码未变。
+真实 prepend 已提交后，在快照返回/抛错处 hold；分别触发同源 subscription replacement、
+切换其他 source、dispose，再 release。检测原 partition 的真实条目/cursor、观察者重读与 epoch，
+同时检查不向旧 generation 发布 transport timeline。
+
+`b2-red-post-commit-ownership`：4 PASS / 2 FAIL；两个 FAIL 分别是同源替换后的成功与失败读取，
+SQLite 已新增条目/cursor2，而观察者没有收到通知。source switch / dispose 的四项保护 PASS。
+这说明不能用全量绿灯覆盖尚未被原测试覆盖的时序；新的 red checkpoint 不作可用候选。

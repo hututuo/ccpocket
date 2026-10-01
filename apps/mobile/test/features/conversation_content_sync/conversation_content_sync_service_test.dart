@@ -2524,6 +2524,134 @@ void main() {
     },
   );
 
+  for (final readFails in [false, true]) {
+    for (final transition in ['same-source', 'other-source', 'dispose']) {
+      test(
+        'older paging post-commit ownership survives $transition with ${readFails ? 'failed' : 'successful'} snapshot read',
+        () async {
+          await service.dispose();
+          await repository.close();
+          final held =
+              _FailingOlderPageSnapshotRepository(
+                  SessionCatalogCacheDatabase(
+                    databasePath: path.join(
+                      temporaryDirectory.path,
+                      'older-ownership.db',
+                    ),
+                    openDatabase: openFfi,
+                  ),
+                )
+                ..holdSnapshotRead = true
+                ..failSnapshotRead = readFails;
+          repository = held;
+          gateway.supportsConversationSyncV2 = true;
+          service = ConversationContentSyncService(
+            bridge: gateway,
+            cache: repository,
+          )..start(initialLifecycleState: AppLifecycleState.resumed);
+          const threadId = 'older-committed-ownership';
+          final subscriptionId = await _bootstrapOlderPage(gateway, threadId);
+          final originalTarget = SessionCatalogCacheTarget.fromBridge(
+            bridgeInstanceId: 'bridge-1',
+            codexSourceId: 'codex-home-a',
+            logicalConnectionIdentity: 'machine:1',
+            websocketUrl: gateway.lastUrl,
+          );
+          final beforeEpoch = service.cacheCommitEpoch;
+          final observerReads = <Future<ConversationHotWindowSnapshot?>>[];
+          final observer = service.updates.listen((update) {
+            if (update.targetFingerprint == originalTarget.fingerprint &&
+                update.providerSessionId == threadId) {
+              observerReads.add(
+                service.loadCachedWindow(
+                  provider: 'codex',
+                  providerSessionId: threadId,
+                ),
+              );
+            }
+          });
+          final transportTimelines = <ConversationSyncCacheUpdate>[];
+          final transportObserver = service.syncUpdates.listen((update) {
+            if (update.kind == ConversationSyncCacheUpdateKind.timeline) {
+              transportTimelines.add(update);
+            }
+          });
+          addTearDown(observer.cancel);
+          addTearDown(transportObserver.cancel);
+          addTearDown(() {
+            if (!held.releaseSnapshotRead.isCompleted)
+              held.releaseSnapshotRead.complete();
+          });
+          final load = service
+              .loadOlderTurns(provider: 'codex', providerSessionId: threadId)
+              .then<void>((_) {}, onError: (Object _) {});
+          final request = await gateway.nextOutgoing('conversation_turns_page');
+          gateway.addEvent(
+            _olderPageReply(
+              subscriptionId: subscriptionId,
+              threadId: threadId,
+              requestId: request['requestId']! as String,
+              sequence: 3,
+              nextCursor: 'older-page-2',
+            ),
+          );
+          await held.snapshotReadStarted.future;
+          Future<void>? disposal;
+          if (transition == 'dispose') {
+            disposal = service.dispose();
+          } else {
+            if (transition == 'other-source')
+              gateway.codexSourceId = 'codex-home-b';
+            expect(
+              service.retryBootstrap(reason: 'post_commit_boundary_test'),
+              isTrue,
+            );
+          }
+          await gateway.nextOutgoing('conversation_sync_unsubscribe');
+          held.releaseSnapshotRead.complete();
+          await pumpEventQueue();
+          if (disposal != null) await disposal;
+          final committed = (await repository.loadConversationWindow(
+            target: originalTarget,
+            provider: 'codex',
+            providerSessionId: threadId,
+          ))!;
+          expect(
+            committed.entries.first.entryId,
+            'turn:older-provider-turn:user:older-provider-user',
+          );
+          expect(committed.turnsNextCursor, 'older-page-2');
+          if (transition == 'same-source') {
+            expect(
+              service.cacheCommitEpoch,
+              greaterThan(beforeEpoch),
+              reason:
+                  'The committed partition remains current after subscription replacement.',
+            );
+            expect(observerReads, hasLength(1));
+            final visible = await observerReads.single;
+            expect(
+              visible?.entries.first.entryId,
+              'turn:older-provider-turn:user:older-provider-user',
+            );
+            expect(visible?.turnsNextCursor, 'older-page-2');
+          } else {
+            expect(service.cacheCommitEpoch, beforeEpoch);
+            expect(observerReads, isEmpty);
+          }
+          expect(
+            transportTimelines,
+            isEmpty,
+            reason:
+                'A local cache notification cannot restore an obsolete transport generation.',
+          );
+          await service.dispose();
+          await load;
+        },
+      );
+    }
+  }
+
   test(
     'older paging rejects a repeated non-null cursor before commit',
     () async {
@@ -7286,6 +7414,10 @@ class _FailingOlderPageSnapshotRepository
 
   final failure = StateError('injected post-commit snapshot read failure');
   bool failNextSnapshotRead = false;
+  bool failSnapshotRead = true;
+  bool holdSnapshotRead = false;
+  final snapshotReadStarted = Completer<void>();
+  final releaseSnapshotRead = Completer<void>();
 
   @override
   Future<ConversationHotWindowSnapshot?> prependConversationTurnsPage({
@@ -7318,10 +7450,20 @@ class _FailingOlderPageSnapshotRepository
     required SessionCatalogCacheTarget target,
     required String provider,
     required String providerSessionId,
-  }) {
+  }) async {
     if (failNextSnapshotRead) {
       failNextSnapshotRead = false;
-      return Future.error(failure);
+      final snapshot = await super.loadConversationWindow(
+        target: target,
+        provider: provider,
+        providerSessionId: providerSessionId,
+      );
+      if (holdSnapshotRead) {
+        snapshotReadStarted.complete();
+        await releaseSnapshotRead.future;
+      }
+      if (failSnapshotRead) throw failure;
+      return snapshot;
     }
     return super.loadConversationWindow(
       target: target,
