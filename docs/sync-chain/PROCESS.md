@@ -5,7 +5,7 @@
 - 时间：2026-10-01（Asia/Taipei）。
 - 分支：`codex/sync-chain-extraction-20261001`。
 - 起始 SHA：`930f1267e949c6cf2095761cc71c43cca08c6dc3`。
-- 阶段：A0–A3 / B1 与 B2 已完成；下一批按 C1-ENTRY 先梳理页面异步缓存重读。
+- 阶段：A0–A3 / B1 与 B2 已完成；C1a 页面异步缓存重读已开始，见 E022 及后续条目。
 - B2 最终产品源码 SHA：`f735ac6b11f05133ac9e42228dbb11fc5cacfacf`，全量启动时 clean。
 - 3279 Mobile PASS / 4 SKIPPED；Bridge 同输入继承 2546 PASS / 1 SKIPPED。
 - E021 单独记录最终 review、静态检查和仅测试样式的复查；具体职责见 PAGING-LIFECYCLE。
@@ -497,3 +497,27 @@ main 仍 `7de33f815e8448c1836227abb6b04784e40c58c9`，原七组未跟踪资料�
 不能将任意红灯或有残余 review 的中间 SHA 当作可用版本。
 下一批先读 C1-ENTRY，登记新账本：验证页面异步缓存重读，再决定完整状态的抽取接口。
 其他分页、canonical/overlay 投影、发送控制、后台、Claude 和真实 Provider 长会话仍各需自己的证据。
+
+## E022 — C1a 起点与读取接点盘点
+
+起始 SHA：`38c4240e54496a4dd504ea6d029d457d78a90bfb`，当前独立 worktree clean；
+产品源码仍是 B2 的 `f735ac6b11f05133ac9e42228dbb11fc5cacfacf`。
+完整读 HANDOFF、相关 decisions 与 C1-ENTRY 后，选定 Codex 页面读取接缝。
+
+范围：`_loadDurablePreview`、retry、start/restart/invalidate、identity canonicalization、
+didUpdateWidget、runtime attachment 和 dispose 的读取归属；UI 布局和 Cubit 合并权不迁移。
+既有页面在成功出口核对 source conflict，但 error 出口仅检查 generation/thread/epoch/dirty；
+这是待验证缺口，不能先据此宣布已定位实际故障。
+
+证据计划：先在 clean 起点重放 durable preview 与 B2 四个真实接收/原页面黑盒，
+使用原显式 Flutter/Node 工具及 `c1-baseline-*` 收据。随后新增真实 SQLite read barrier，
+分别记录通知合并、迟到读取/错误、换目标、保留 last-good 与 retry 的实际页面结果。
+纯生命周期测试补 owner 清理边界，不能替代原页面；不把模拟 Provider 当真实 Provider。
+
+只读 Luna 支持仅盘点现有测试和夹具，root 负责诊断、测试、生产修改、整合与验证。
+新 red checkpoint 与独立行为修复先登记，再决定结构抽取接口；禁止直接搬动整个页面对象。
+源码、设备、生产服务及发布依旧分层。此条登记时 C1a 产品代码尚未改变，测试仍在执行。
+
+基线收据 `c1-baseline-preview-chain.json/.log`：clean 起点 36 tests PASS，exit 0，21.376 秒；
+包含既有 durable preview 回归与四个真实接收/原页面黑盒。此结果只作未改动基线，
+新真实 SQLite 读取交错及迟到错误的契约尚待补充。
