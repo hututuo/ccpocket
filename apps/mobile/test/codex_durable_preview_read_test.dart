@@ -57,6 +57,50 @@ void main() {
     });
   });
 
+  for (final failRead in [false, true]) {
+    testWidgets(
+      'returning to the same source rereads after a discarded ${failRead ? 'error' : 'window'}',
+      (tester) async {
+        await _withPreview(tester, (fixture) async {
+          await fixture.commit('thread', 'initial', 'Last good source A');
+          await fixture.mount('thread');
+          await fixture.visible('Last good source A');
+          final read = fixture.sync.holdNextRead();
+          await fixture.commit('thread', 'next', 'Unread source A');
+          await fixture.waitFor(() => read.arrived.isCompleted);
+          fixture.bridge.authenticatedCodexSourceId = 'source-b';
+          fixture.bridge.emitSessionList(const []);
+          await tester.pump();
+          read.release(
+            error: failRead ? StateError('retired source A error') : null,
+          );
+          await fixture.waitFor(() => read.finished.isCompleted);
+          expect(find.text('Last good source A'), findsOneWidget);
+          expect(find.byType(SnackBar), findsNothing);
+
+          // Reauthentication does not replay a body already committed in SQLite.
+          // Only the original page can recover the dropped read's pending work.
+          fixture.bridge.authenticatedCodexSourceId = 'source-a';
+          fixture.bridge.emitSessionList([
+            SessionInfo(
+              id: 'runtime-source-a',
+              provider: 'codex',
+              claudeSessionId: 'thread',
+              projectPath: '/workspace/source-a',
+              status: 'idle',
+              createdAt: '2026-10-01T00:00:00Z',
+              lastActivityAt: '2026-10-01T00:00:00Z',
+            ),
+          ]);
+          await fixture.visible('Unread source A');
+          expect(find.text('Last good source A'), findsNothing);
+          expect(fixture.sync.readCalls, 3);
+          expect((await fixture.cached('thread'))?.revision, 'next');
+        });
+      },
+    );
+  }
+
   for (final failObsoleteRead in [false, true]) {
     testWidgets(
       'SQLite commits coalesce after an obsolete ${failObsoleteRead ? 'error' : 'window'}',

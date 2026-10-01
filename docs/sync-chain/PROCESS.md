@@ -587,3 +587,17 @@ root 与独立 review 另确认现存的 P2 source-return stale preview：
 A-next 已提交，A 的 read 因切到 B 被丢弃；跟进读又被 source fence 阻止且 dirty 被消费，
 A 再认证时“已加载 A”快捷路径不检查遗漏工作。接下来用独立 red/fix 提交闭合，
 不把它描述为纯迁移的一部分，不借用 140 PASS 盖过新失败。
+
+## E027 — 返回原来源的 pending read 红灯
+
+产品结构保持 E026 不变。新增 success/error 两种 read barrier：
+先显示 A-initial，提交 A-next，暂停原读；认证 B、释放旧结果，确保无旧 Snackbar；
+然后 A 重新认证，仅给出权威 runtime list，不重放已提交正文。
+SQL 已是 next，但原页面无法显示 A-next。
+`c1-red-return-to-source-compiled`：0 PASS / 2 FAIL，exit 1，在等待新正文处超时，
+证明 finally 消耗 dirty、随后 source fence 阻止重读、已加载分区快捷判断共同漏掉 pending 工作。
+首个 `c1-red-return-to-source` 为 SessionInfo 必填字段未齐的测试编译 FAIL，保留且不计产品 red。
+
+修法限定：dirty 工作只在实际开始下一次读或显式 invalidate 时消费；
+同来源再认证的加载快捷判断须看是否仍有 deferred read。继续保留 source fence 和 last-good，
+不增加 epoch/revision 的第二写入者，不用每次 catalog 更新强制查询来掩盖问题。
