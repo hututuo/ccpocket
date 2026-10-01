@@ -2579,8 +2579,9 @@ void main() {
           addTearDown(observer.cancel);
           addTearDown(transportObserver.cancel);
           addTearDown(() {
-            if (!held.releaseSnapshotRead.isCompleted)
+            if (!held.releaseSnapshotRead.isCompleted) {
               held.releaseSnapshotRead.complete();
+            }
           });
           final load = service
               .loadOlderTurns(provider: 'codex', providerSessionId: threadId)
@@ -2600,8 +2601,9 @@ void main() {
           if (transition == 'dispose') {
             disposal = service.dispose();
           } else {
-            if (transition == 'other-source')
+            if (transition == 'other-source') {
               gateway.codexSourceId = 'codex-home-b';
+            }
             expect(
               service.retryBootstrap(reason: 'post_commit_boundary_test'),
               isTrue,

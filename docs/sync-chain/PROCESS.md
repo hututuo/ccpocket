@@ -5,9 +5,10 @@
 - 时间：2026-10-01（Asia/Taipei）。
 - 分支：`codex/sync-chain-extraction-20261001`。
 - 起始 SHA：`930f1267e949c6cf2095761cc71c43cca08c6dc3`。
-- 阶段：A0–A3 / B1 已完成；用户再次要求继续，开始 B2 older-turn 分页生命周期。
-- 最终验证源码 SHA：`45a4498a75d2649021b286eee0ea37f54ef86253`；随后仅补文档，不冒充重新验证过业务源码。
-- 当前批：B2 请求契约/失败用例；具体状态与验收见 PAGING-LIFECYCLE，E011 尚无业务修改。
+- 阶段：A0–A3 / B1 与 B2 已完成；下一批按 C1-ENTRY 先梳理页面异步缓存重读。
+- B2 最终产品源码 SHA：`f735ac6b11f05133ac9e42228dbb11fc5cacfacf`，全量启动时 clean。
+- 3279 Mobile PASS / 4 SKIPPED；Bridge 同输入继承 2546 PASS / 1 SKIPPED。
+- E021 单独记录最终 review、静态检查和仅测试样式的复查；具体职责见 PAGING-LIFECYCLE。
 - 最新提交与验证身份在后续条目登记；不能从本节推断部署状态。
 
 ## E001 — 建立隔离执行与文档
@@ -271,7 +272,7 @@ dirty-success、focus-intent flight 和统一 manual refresh 清理。确认初�
 批次之间有源码依赖，回退步骤见 RUNBOOK；不能以任意挑一个较早 SHA 上线来代替验证。
 本条所在最终文档提交身份由 `git log -1` 获取，不在正文内自引用。
 
-后续接手：先核对分支/status 与最终源码身份，读 PLAN 的 B2 入口，再新建账本批次。
+本条 E010 当时的接手入口为 PLAN 的 B2；B2 后续执行见 E011 起，当前以本页顶部断点为准。
 原始 Provider、发送/控制、后台、Claude、长会话、设备与生产各需要自己的闭环证据；
 R13/R14 和云端 runner 仍 NOT_RUN，不从本轮接收 PASS 推断整体链路完全正确。
 
@@ -445,3 +446,54 @@ transport timeline/syncUpdates/ACK 继续按原 `_isV2Current` 判断，不复�
 独立最终复审将针对此修正与它影响的归属判断闭环。
 
 另补 C1 的具体接手页：优先审页面异步缓存重读生命周期，其产品代码尚未修改。
+
+## E021 — B2 最终门禁、接手与回滚点
+
+最终产品源码：`f735ac6b11f05133ac9e42228dbb11fc5cacfacf`，全量启动时 clean。
+最终独立只读 review 确认此前全部 B2 finding 关闭，无剩余 actionable finding；
+review receipt 为证据目录的 `b2-independent-review.md`，范围仅 B2，未运行测试或设备。
+
+| 检查 / 原始收据 | 身份与结果 |
+|---|---|
+| `b2-final-confirmed-full-mobile.json/.log` | f735ac6b clean；3279 PASS / 4 SKIPPED，exit 0，247.292 秒；包含四个接收/原页面黑盒 |
+| `b2-final-confirmed-full-analyze.json/.log` | f735ac6b clean；0 error/warning；1021 info，包含新增测试两处大括号 info 各重复一次；未把它们记成既有问题 |
+| `b2-final-test-style-related.json/.log` | 仅给新增测试两处 if 补大括号；产品源码不变；87 相关 tests PASS，exit 0 |
+| `b2-final-test-style-analyze.json/.log` | 补大括号后全量 analyze exit 0；0 error/warning、1017 info |
+| `b2-final-analysis-baseline-comparison.json` | 完整诊断按 severity/file/text 比对 E010，保留重复数量、忽略迁移后行列；无新增/减少 info |
+| `b2-final-format-after-test-style.json/.log` | 本批七个 Dart 文件，0 changed，exit 0 |
+| `b2-final-bridge-build.json/.log`、`b2-final-bridge-typecheck.json/.log` | E018 的 67fbef1a clean；build/noEmit PASS |
+| `b2-final-full-bridge-corrected.json/.log` | 67fbef1a clean；2546 PASS / 1 SKIPPED、124 files PASS，exit 0 |
+| `b2-bridge-gate-inheritance.json` | 67fbef1a 与 f735ac6b 的 Bridge tree 都为 2bcc606909b9eb34470eafe264045186a6c1f2b9；Bridge/依赖输入无变化，继承门禁 |
+
+最终测试样式没有改变条件、断言或测试范围；已重跑其完整相关目录与静态检查。
+本条所在接手提交只增加文档和该测试样式，未改后续业务行为，提交身份由 `git log -1` 获取。
+全量黑盒轨迹为 `b2-final-confirmed-traces/`，保留 RPC / Bridge/client 帧 / SQLite hash / 页面断言。
+原输出仍在 `/Users/developer/AI agent/Codex/_tmp/ccpocket-sync-chain-20261001/`，失败收据不覆盖、不删测试。
+
+四个 Mobile SKIPPED：SSH private key 两项、Bridge tunnel 一项、jump host 一项，均 smoke env not set；
+Bridge 一项真实链 smoke 未 opt in。它们不计作 PASS，也未配置真实 SSH/Provider 环境。
+真实 Provider、模拟器/真机、生产 Bridge、OTA、签名安装、云 CI、merge/push/发布均 NOT_RUN。
+本轮只证明选定接收闭环、源码门禁和 review，不能从测试总数推断整条运行链全部正确。
+
+原 checkout 核对收据：`b2-original-checkouts.json`。
+main 仍 `7de33f815e8448c1836227abb6b04784e40c58c9`，原七组未跟踪资料保留；
+旧修复分支仍 `930f1267e949c6cf2095761cc71c43cca08c6dc3`、clean。
+
+### B2 提交与依赖索引
+
+| 批次 | 完整提交 SHA | 用途 / 当前判断 |
+|---|---|---|
+| E011 | ad9765747460b93a856526de78215730a02796e7 | older 请求契约与批次边界 |
+| E012 | 193374d265d78d6e6d0b820ae41daf29f481b2c0 | 三个红灯 checkpoint；不可作运行候选 |
+| E013 | 0817dfbeaa157891e33893721a3bdda39810daf1 | 局部错误、游标停滞、已发送请求 reset 修复；后续补 preparing/queued 与提交后读取 |
+| E014 | 55d5deecccccb10a5ad35c25f11e324fcdc98b7b | 两页 older 的真实 RPC/SQLite/原页面及夹具关闭保护 |
+| E015 | f112f3bd130bfafd99e18a261a19e2fc0591f9a1 | lifecycle/DTO 结构抽取；后续行为依赖此模块 |
+| E016 | 42ddc307155f2231e1c9555e2ba007cbebbbd64a | preparing/queued reset 与 post-commit read 三个红灯 checkpoint |
+| E017 | 67fbef1ac412994e64bb62e478d1a720be373ef1 | operation 取消与异常 invalidation；E018 全量绿，但后续 review 找到订阅替换通知缺口 |
+| E019 | 9bb11a12950131001afcb453b72b0b0404aa98a5 | 提交期间替换的两个红灯、其他 source/dispose 四个保护 |
+| E020 | f735ac6b11f05133ac9e42228dbb11fc5cacfacf | 本地通知与 transport 归属分别判断；B2 最终验证产品源码点 |
+
+回退按 RUNBOOK 的依赖逆序，在隔离 checkout 保留已经证明的行为与回归；
+不能将任意红灯或有残余 review 的中间 SHA 当作可用版本。
+下一批先读 C1-ENTRY，登记新账本：验证页面异步缓存重读，再决定完整状态的抽取接口。
+其他分页、canonical/overlay 投影、发送控制、后台、Claude 和真实 Provider 长会话仍各需自己的证据。

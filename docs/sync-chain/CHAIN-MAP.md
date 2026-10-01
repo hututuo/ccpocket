@@ -47,6 +47,27 @@ LatestTurnRepairScheduler 独占自动去重/dirty/operation token/失败状态�
 请求与 SQLite 写入、coverage、通知、页面仍使用上表的原路径。
 取消接点与失败预算见 RUNBOOK，验证收据见 PROCESS。
 
+## B2 后的 older-turn 分页边界
+
+Service 的 `loadOlderTurns` 向 `OlderTurnsPagingLifecycle` 取得一个 target/provider/session flight。
+模块独占 single-flight、准备/排队 operation、wire pending、15 秒 deadline、恰好一次结算和取消。
+Service 保留 `_enqueueHistoryOperation` 与 latest repair 的共享串行，以及订阅替换的
+最多两次尝试/8 秒等待。结果 DTO 独立保存，原 Service export 维持调用方入口。
+
+wire 回复只有通过原 source/subscription/sequence/request 身份核对，才调用 Repository 的
+revision/cursor 原子 prepend。重复 non-null cursor 在写入前拒绝。
+thread reset 同时失效准备、排队和已发送请求；其他 thread/source 不受影响。
+
+已进入本地 mutation 后，提交事实的观察者通知按当前 cache partition 且未 dispose 判断；
+成功/可能已提交但 snapshot read 出错都使用原 epoch/updates。同源订阅替换不能隐藏本地事实。
+旧 generation 的 syncUpdates/ACK 仍被原 transport fence 拦截。
+取消后已开始的本地工作保留 join 责任，不能提前关闭 SQLite 或把异常等同 rollback。
+跨 source / dispose 不通知旧目标，未来新请求取得独立 operation 身份。
+
+本批真实 older-pages 黑盒通过生产页面自动 loader 请求两页，验证原页面更新、稳定 ID/顺序、
+cursor 1→2→null、最新内容保留与加载终态；上游仍为隔离 Provider fixture。
+具体终态与测试入口见 PAGING-LIFECYCLE / TEST-MATRIX，下一批入口见 C1-ENTRY。
+
 ```mermaid
 flowchart LR
   P[Provider / 隔离 fixture] --> B[Bridge / RPC 转换]
@@ -76,6 +97,9 @@ repair transaction 接受后仍走原通知出口；图不表示所有事务都�
 | 2000 rows | Repository.maxHotWindowEntries 的本地热窗口 | 保留前缀、覆盖声明、分页/rollover、R07/R11；不是渲染数量 |
 | 4 次失败 / 1、2、4 秒重试 | scheduler 每个 revision/turn/repair 操作 | 失败预算与取消、R15；不是手动操作 deadline |
 | 128 个完成观察 | scheduler 的 summary observation 记忆 | 去重与新进度、R02/R03；不是 Provider revision |
+| 15 秒响应 deadline | older lifecycle 已登记的单次 wire request | deadline/终态与迟到 reply，R18；不是 SQLite 事务强行回滚期限 |
+| 两次尝试 / 8 秒等待 | SyncService older 订阅替换恢复 | 只对 paging interruption 重试，R07/R08/R17；thread reset/error 不绕过预算 |
+| limit 1–20 | older summary turns request | 分页 cursor 前进与数据范围，R17/R19；不等于 Mobile frame entries limit |
 
 相同数值可能约束不同对象。先确认对象和权威出口，再判断是否能合并或退役；
 本批没有为减少判断数而放宽身份、coverage 或容量保护。

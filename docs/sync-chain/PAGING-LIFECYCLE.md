@@ -52,7 +52,7 @@ flight 在进入共享队列前取得 scoped operation，Service 在开始读取
 thread reset 失效同 target/provider/session 的 operation，保留 wire pending 的 generation fence。
 正在等待新订阅的 flight 也属于该 thread；普通 subscription replacement 仍按既有两次尝试继续。
 没有永久 per-thread tombstone；operation 随 flight 完成回收，新调用取得新身份。
-异常路径复用已有 cache invalidation/epoch，传输当前性检查后通知观察者重读，保留原错误。
+异常路径复用已有 cache invalidation/epoch，保留原错误；通知归属以 E020 的分区检查为准。
 这不声称事务一定提交；事务前异常时只会重读原窗口，不新增数据库权威或改变 Repository 接口。
 E019/E020 补齐提交期间订阅替换：上述异常路径和成功路径的本地通知改按当前 cache partition
 且未 dispose 检查；transport timeline/ACK 保持 generation 检查。其他 source / dispose 的保护也有回归。

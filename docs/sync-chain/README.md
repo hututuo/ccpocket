@@ -10,7 +10,13 @@ analyze 0 error/warning（1017 既有 info），独立只读复核无新增 acti
 自动修复调度已独立；进度观察排序与手动刷新清理的补漏也有回归。
 后续文档提交不改变这个源码身份；精确收据与提交索引见 PROCESS 的 E010。
 
-当前继续 B2，见 [分页生命周期](PAGING-LIFECYCLE.md) 与 PROCESS 最新条目；完成门禁尚待本批验证。
+B2 已完成 older-turn 的生命周期抽取及相关边界修复。最终产品源码
+`f735ac6b11f05133ac9e42228dbb11fc5cacfacf`：Mobile 全量 3279 PASS / 4 SKIPPED，
+Bridge 全量 2546 PASS / 1 SKIPPED，独立源码复核无剩余 actionable finding。
+最终静态分析 0 error/warning，1017 既有 info，无新增；仅测试样式后续修正复查亦通过。
+分页请求的错误、reset 准备/排队取消、提交后的观察者通知分别有 red → green 记录；
+本地缓存事实的通知与旧订阅 transport 归属分别判断。完整门禁及测试样式复查见 PROCESS 的 E021。
+具体边界见 [分页生命周期](PAGING-LIFECYCLE.md)，下一批见 [C1 入口](C1-ENTRY.md)。
 真实 Provider、模拟器/真机、云 CI 与生产部署各自仍为 NOT_RUN；
 本批只证明所选接收闭环和源码门禁。
 
@@ -21,6 +27,7 @@ analyze 0 error/warning（1017 既有 info），独立只读复核无新增 acti
 3. [回归矩阵](TEST-MATRIX.md)：哪些场景有证据，哪些仍未验证。
 4. [过程账本](PROCESS.md)：每批动机、修改位置、测试和下一步。
 5. [接手与验证操作](RUNBOOK.md)：责任边界、重跑命令、回退与下批入口。
+6. [C1 入口](C1-ENTRY.md)：下一批先验证页面异步缓存重读；产品代码尚未修改。
 
 过程记录不得以旧证据覆盖新失败。源码测试通过、真实 Provider、模拟器、真机、部署和发布分别报告。
 这组文档与对应代码一同提交；原始测试输出保存为独立文件，账本记录命令、身份、结果和证据路径。

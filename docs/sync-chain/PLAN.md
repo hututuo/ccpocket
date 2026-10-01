@@ -24,7 +24,9 @@ main 已有未跟踪资料，不纳入本批、不覆盖；V4 是独立候选线
 | C2 | 按领域逐批抽 Bridge handler | 连接、认证、序列、权限归属不重复实现 |
 | D | 按调用/版本矩阵退役旧分支，更新唯一文档入口 | 确认路径无支持用途；删除对应状态与文档，而非只藏入口 |
 
-第一批 A0–A3 / B1 已执行并通过 E010 源码门禁，当前停在 B2 入口。后续大类不会在同一批重写。
+第一批 A0–A3 / B1 已执行并通过 E010 源码门禁；B2 的执行与门禁见 PROCESS 最新条目。
+后续 C1 先限定为页面异步缓存重读，具体入口见 [C1-ENTRY](C1-ENTRY.md)，再评估投影。
+后续大类不会在同一批重写。
 任何失败先记录并定位；在选定段的正确结果仍无法判定时停止扩大抽取范围，继续补证据。
 
 ## 第一段的正确性契约
@@ -54,6 +56,8 @@ main 已有未跟踪资料，不纳入本批、不覆盖；V4 是独立候选线
 状态为 `_historyPageFlights` / `_pendingTurnsPages`；入站处理在 turnsPageResponse / error，
 中断出口为 `_failPendingTurnsPages` 与原订阅生命周期。Repository 的
 `prependConversationTurnsPage` 继续是接受 revision/cursor 与写入内容的权威。
+以上为 E011 起点；B2 抽取后状态归 `OlderTurnsPagingLifecycle`，原 Service 入口保留。
+当前责任表和提交依赖见 PAGING-LIFECYCLE / RUNBOOK，旧 map 名称不作为后续修改入口。
 
 1. 登记请求身份表：source/target/provider/session、generation/subscription/requestId、
    expected revision/cursor；列清谁创建、谁核对、谁清理，不能仅移动 map。

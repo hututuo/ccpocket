@@ -13,7 +13,7 @@
 4. 只运行受影响的检查开始定位，再跑本批完成门禁。失败原日志保留，记录修正后新运行的身份。
 5. 最终根审与独立 self-review 后，更新当前断点、尚未验证项、下批入口，再提交。
 
-## 第一块抽取的责任边界
+## 已抽取模块的责任边界
 
 | 责任 | 唯一位置 | 后续改动要同时检查 |
 |---|---|---|
@@ -21,14 +21,27 @@
 | route 与 manual refresh 跨会话的焦点意图与旧状态清理 | SyncService._updateFocusedConversation | R05 |
 | 自动修复状态、completed observation、dirty、operation token、retry/cancel | latest_turn_repair_scheduler.dart | R02/R04/R05/R15 |
 | 同会话请求串行、焦点内 flight 复用 | SyncService.repairLatestTurn / _enqueueHistoryOperation | R05/R07 |
+| older flight、准备/排队取消、pending、deadline、恰好一次结算与 join | older_turns_paging_lifecycle.dart | R17/R18/R20 |
+| older 身份、请求参数、订阅重试、Repository 调用 | SyncService.loadOlderTurns / _loadOlderTurnsWithRetry / ordered receiver | R07/R08/R17 |
 | 缓存事务与内容/coverage | Repository | R01/R06/R07/R11 |
-| 事务后的 epoch/updates | SyncService 原通知出口 | R01/R09 |
+| 事务后的 epoch/updates；已开始 older mutation 的事实按 cache partition 通知，旧 transport 仍 fence | SyncService 原通知出口 | R01/R09/R19/R21 |
 | durable window 重新读取与展示 | 原 Codex 页面/Cubit/layout | R09 |
 
 调度器只接受不可变的身份/观察值和三个窄回调：判断当前操作、执行既有修复、重新观察缓存。
 它没有数据库、Gateway 或页面对象。route 或 manual refresh 导致 focus 离开，与 thread reset 调用 clearTarget；
 订阅开始/结束、断线、生命周期离开、source 更换与 dispose 经原订阅生命周期调用 clearAll。
 不能只移走计时器代码却把旧状态留在 Service 中。
+
+older lifecycle 不持有 Gateway、Repository 或页面。Service 把窄的 immutable request facts 提交给模块，
+从模块找 active request，再走原 SQLite 路径；不能把每个分页各造一套数据库/全局恢复器。
+thread reset 通过 failTarget 失效已登记请求及准备/排队 operation；停止订阅通过 failAll 结算
+wire waiter。普通订阅替换仍允许原 wrapper 最多重试一次；dispose 从 flights snapshot 等待本地工作。
+read barrier 若尚未释放，这个 join 会等待它结束，不能通过提前关 DB 假装取消完成。
+
+older prepend API 包含 transaction 与提交后的 snapshot read；异常阶段不明确时保留原错误，
+在 cache partition 仍当前且未 dispose 时复用 invalidation 通知观察者重读。
+success 同样按 cache partition 通知；transport timeline 与 ACK 仍按订阅代次。
+修改任一检查时必须同时跑 R21 的 success/error、same-source/other-source/dispose 六种交错。
 
 接收排序中的 await 只等本地缓存观察进入 scheduler，不等待 repair 网络回复。
 不要把它恢复成纯后台观察，否则较晚 repair completion 可能抢先记完成值，吞掉较早的 dirty 进度。
@@ -69,11 +82,13 @@ cd apps/mobile
 "$CCPOCKET_FLUTTER_BIN" pub get --offline
 "$CCPOCKET_FLUTTER_BIN" test --no-pub --reporter expanded \
   test/features/conversation_content_sync/latest_turn_repair_scheduler_test.dart \
+  test/features/conversation_content_sync/older_turns_paging_lifecycle_test.dart \
   test/features/conversation_content_sync/conversation_content_sync_service_test.dart \
   test/features/session_list/cache/session_catalog_cache_repository_test.dart \
   test/models/conversation_sync_v2_protocol_test.dart
 "$CCPOCKET_FLUTTER_BIN" test --no-pub --reporter expanded \
   test/blackbox/conversation_latest_turn_gap_receiver_test.dart \
+  test/blackbox/conversation_live_segment_receiver_test.dart \
   test/blackbox/conversation_full_page_test.dart
 "$CCPOCKET_DART_BIN" analyze .
 "$CCPOCKET_FLUTTER_BIN" test --no-pub --reporter expanded
@@ -105,11 +120,18 @@ git diff --check
 分批提交不意味着可以任意顺序 revert：E009 的 scheduler 清理依赖 B1 抽取，
 后续行为批也依赖 E004/E005 的进度与 flight 归属。评估结构回退时先逆序撤掉依赖，
 或在隔离 checkout 适配行为修复，再运行完整矩阵。不要直接将中间红灯 checkpoint 当可用候选。
-E010 登记的 `45a4498a` 是本批最终绿灯源码点；本轮从未部署，撤销源码不需要替换生产运行。
+E010 登记的 `45a4498a` 是第一批最终绿灯源码点，B2 最终产品源码为 `f735ac6b`；
+精确提交与测试样式后续检查见 PROCESS。本轮从未部署，撤销源码不需要替换生产运行。
 
-下一块是 B2 单种历史分页生命周期：先列请求身份、ready/deadline、accepted/interrupted/failed
-终态、cursor、reset/dispose 和过期回复；先补其缺失的闭环，再移动完整状态。
-在这一块成立前，不扩大到 Cubit 全面拆分、Bridge 总路由重写或 V4 候选整合。
+B2 的 E017/E020 行为提交依赖 E015 的生命周期/DTO 抽取；回退结构时先在隔离 checkout
+处理后续行为依赖，并恢复 Service export 与所有 pending/deadline/flight/dispose 接点。
+E013 的局部失败/游标保护、E017 的 preparing/queued 取消、E020 的分区通知不能顺手丢弃。
+E012/E016/E019 是红灯 checkpoint，E015/E018 也有后来发现的残余边界，不能直接作为运行候选。
+优先审阅单个提交；实际 revert 按依赖逆序，保留回归用例并运行完整矩阵。
+
+下一块按 [C1-ENTRY](C1-ENTRY.md) 先收敛页面异步缓存重读，再评估单种展示投影。
+既有其他分页/控制路径的相似交错仍待各自证明，不从 older 两个出口的修正推断它们已经正确。
+不扩大到 Cubit 全面重写、Bridge 总路由重写或 V4 候选整合。
 
 真实 Provider、模拟器、真机、生产 Bridge、OTA 和安装/发布状态单独记在矩阵中。
 本轮检查不会自动授权部署、merge、push 或发布。
