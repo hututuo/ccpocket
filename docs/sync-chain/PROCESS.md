@@ -601,3 +601,22 @@ SQL 已是 next，但原页面无法显示 A-next。
 修法限定：dirty 工作只在实际开始下一次读或显式 invalidate 时消费；
 同来源再认证的加载快捷判断须看是否仍有 deferred read。继续保留 source fence 和 last-good，
 不增加 epoch/revision 的第二写入者，不用每次 catalog 更新强制查询来掩盖问题。
+
+## E028 — deferred read 恢复与被动绑定保护
+
+父 red：`174842d46c87a369ee42c45c86939553d92abc61`；结构依赖 E026
+`99e86306b9c3792d2354885af96b2211f0eac660`。
+`finish` 退休 owner 但保留 dirty，直到下一次 `begin` 或 invalidate；
+页面已加载目标的快捷判断同时检查 `needsRead`。身份 fence、epoch、last-good 和读出的 snapshot
+语义均保留，没有通知总线、轮询或 cache epoch 的第二个写入者。
+
+`c1-deferred-reread-green`：52 PASS，含两个 source-return red 转绿、八个生命周期和既有 durable。
+`c1-passive-runtime-read-compiled`：13 个真实 SQL 页面 tests PASS；新增被动 runtime 绑定的正向保护。
+被动绑定只改变 runtime receipt/control/overlay，durable 页面仍为 detachedPreview，
+runtime 订阅丢弃完整历史帧；SQLite reader 须能导入冷窗口并继续接收原 commit 更新。
+独立 review 据此撤回“被动绑定应取消 reader”的假设，未机械应用显式 attachment 的取消逻辑。
+首个 `c1-passive-runtime-read` 为测试 getter 名称准备错误导致 compile FAIL，保留而不记产品红灯。
+
+独立只读 review 在当前工作树未发现其他 P0–P2；source-return 的本地 fix 已逐行复核，
+将以本提交固定身份再复核，并运行 clean 全量门禁。仅给新增常量 SessionInfo 补 const，
+不改变测试场景/断言。当前仍未宣称 C1a 整体门禁完成。

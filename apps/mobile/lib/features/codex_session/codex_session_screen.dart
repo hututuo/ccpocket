@@ -627,6 +627,7 @@ class _CodexSessionScreenState extends State<CodexSessionScreen> {
       );
     }
     if (_cachedPreviewTargetFingerprint == targetFingerprint &&
+        !_previewReads.needsRead &&
         (!_previewReads.isLoading ||
             _previewReads.loadingTargetFingerprint == targetFingerprint)) {
       return;

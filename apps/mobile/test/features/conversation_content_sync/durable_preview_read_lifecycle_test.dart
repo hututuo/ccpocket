@@ -159,6 +159,36 @@ void main() {
     expect(reads.finish(current), isFalse);
   });
 
+  test(
+    'deferred dirty work survives a blocked follow-up until a read starts',
+    () {
+      final reads = DurablePreviewReadLifecycle();
+      final read = begin(reads);
+      expect(
+        reads.shouldAccept(
+          read,
+          targetIsCurrent: false,
+          currentCacheCommitEpoch: 1,
+        ),
+        isFalse,
+      );
+      expect(reads.finish(read), isTrue);
+      expect(reads.isLoading, isFalse);
+      expect(reads.needsRead, isTrue);
+      final recovered = begin(reads);
+      expect(reads.needsRead, isFalse);
+      expect(
+        reads.shouldAccept(
+          recovered,
+          targetIsCurrent: true,
+          currentCacheCommitEpoch: 1,
+        ),
+        isTrue,
+      );
+      expect(reads.finish(recovered), isFalse);
+    },
+  );
+
   test('dispose rejects late work and prevents any restart', () {
     final reads = DurablePreviewReadLifecycle();
     final old = begin(reads);

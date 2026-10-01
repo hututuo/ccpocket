@@ -21,6 +21,7 @@ class DurablePreviewReadLifecycle {
   bool _disposed = false;
 
   bool get isLoading => _active != null;
+  bool get needsRead => _dirty;
   String? get loadingTargetFingerprint => _active?.targetFingerprint;
 
   /// Target changes must invalidate the previous read before starting here.
@@ -65,14 +66,13 @@ class DurablePreviewReadLifecycle {
     if (_active != null) _dirty = true;
   }
 
-  /// Returns whether the owner needs one follow-up, then releases its loading
-  /// state. An invalidated ticket cannot consume a newer owner's dirty state.
+  /// Releases this owner and retains dirty work until a new read actually
+  /// starts. A source fence may defer the follow-up until reauthentication.
+  /// An invalidated ticket cannot consume a newer owner's dirty state.
   bool finish(DurablePreviewReadTicket ticket) {
     if (!owns(ticket)) return false;
     _active = null;
-    final reread = _dirty;
-    _dirty = false;
-    return reread;
+    return _dirty;
   }
 
   void invalidate() {

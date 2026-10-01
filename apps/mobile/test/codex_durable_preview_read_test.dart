@@ -82,7 +82,7 @@ void main() {
           // Only the original page can recover the dropped read's pending work.
           fixture.bridge.authenticatedCodexSourceId = 'source-a';
           fixture.bridge.emitSessionList([
-            SessionInfo(
+            const SessionInfo(
               id: 'runtime-source-a',
               provider: 'codex',
               claudeSessionId: 'thread',
@@ -92,6 +92,7 @@ void main() {
               lastActivityAt: '2026-10-01T00:00:00Z',
             ),
           ]);
+          expect((await fixture.cached('thread'))?.revision, 'next');
           await fixture.visible('Unread source A');
           expect(find.text('Last good source A'), findsNothing);
           expect(fixture.sync.readCalls, 3);
@@ -100,6 +101,52 @@ void main() {
       },
     );
   }
+
+  testWidgets(
+    'passive runtime binding keeps the SQLite canonical reader alive',
+    (tester) async {
+      await _withPreview(tester, (fixture) async {
+        await fixture.commit('thread', 'initial', 'Cached runtime window');
+        final read = fixture.sync.holdNextRead();
+        await fixture.mount('thread');
+        await fixture.waitFor(() => read.arrived.isCompleted);
+        fixture.bridge.emitSessionList([
+          const SessionInfo(
+            id: 'observed-runtime',
+            provider: 'codex',
+            claudeSessionId: 'thread',
+            projectPath: '/workspace',
+            status: 'idle',
+            createdAt: '2026-10-01T00:00:00Z',
+            lastActivityAt: '2026-10-01T00:00:00Z',
+          ),
+        ]);
+        await tester.pump();
+        read.release();
+        await fixture.visible('Cached runtime window');
+        expect(fixture.cubit().detachedPreview, isTrue);
+        expect(fixture.cubit().runtimeSessionIdForRead, 'observed-runtime');
+        await fixture.commit(
+          'thread',
+          'live-committed',
+          'Committed runtime window',
+        );
+        await fixture.visible('Committed runtime window');
+        expect(find.text('Cached runtime window'), findsNothing);
+        expect(fixture.sync.readCalls, lessThanOrEqualTo(3));
+        expect(
+          fixture
+              .cubit()
+              .state
+              .entries
+              .whereType<UserChatEntry>()
+              .single
+              .messageUuid,
+          'user:thread:live-committed',
+        );
+      });
+    },
+  );
 
   for (final failObsoleteRead in [false, true]) {
     testWidgets(

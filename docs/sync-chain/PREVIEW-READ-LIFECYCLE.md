@@ -1,6 +1,6 @@
 # Codex 页面缓存读取生命周期
 
-范围：C1a；起点与中间证据见 PROCESS E022–E025。当前是契约冻结与结构迁移设计，
+范围：C1a；起点与中间证据见 PROCESS E022–E028。当前已迁移，deferred read 补漏后准备最终门禁，
 后续完成状态和验证源码身份以 PROCESS 的最终门禁为准。
 
 ## 谁拥有哪一层
@@ -25,18 +25,22 @@ Cubit、Repository、缓存窗口和数据源解析依赖，也不形成另一�
    cache epoch 没有推进且没有合并的 dirty 通知。过时结果或错误不能进入页面。
 3. dirty/epoch 变化只要求一次 follow-up；跟进读期间再有新提交则仍可继续合并，
    不丢已提交事实，也不为无变化生成永久轮询。
+   若 immediate follow-up 因 source conflict 暂时不可执行，dirty 保留到真正 `begin`；
+   重新认证不能仅因已加载过同分区就跳过该工作。`needsRead` 只表示本地未消费读取意图。
 4. finally 仅能退休自己的 ticket。invalidate、换目标或 dispose 后，旧 success/error/finally
    均不能接受结果、清理新 loading 或抢走新 dirty。
 5. restart/canonicalization、didUpdateWidget 的目标与 attachment 变化、session_created、dispose
    全部调用同一生命周期；SQL 不做伪取消，迟到读取通过 owner 检查丢弃。
 6. 真正当前的失败保留 last-good，页面给出 Retry；成功读取按原 cachedAt/null 保护接受。
+7. 权威 session list 被动绑定 runtime 只改变 receipt/control/overlay，不改变 durable
+   canonical reader；显式 attachment 转换的失效接点不能机械套用在被动观察路径。
 
 页面仍在调用前检查数据源和 expected target；接受阶段复核一次。
 Service 通知与 epoch 的真实性由原 receiver 处理，helper 不增加第二个通知/写入入口。
 
 ## 已有证据与剩余验证
 
-`codex_durable_preview_read_test.dart` 的十个契约来自真实 SQLite；barrier 只暂停原查询之后的
+`codex_durable_preview_read_test.dart` 的十三个契约来自真实 SQLite；barrier 只暂停原查询之后的
 返回或注入边界异常。incoming-event fixture 证明 Service/SQL/页面，不证明真实 WebSocket/RPC。
 原四个黑盒补上真实 Bridge/RPC（隔离 Provider fixture）→SQL→原页面链路。
 legacy empty 在 SQL 中可为空但保留 last-good 可见内容；V2 complete empty 清理 canonical，
@@ -48,6 +52,7 @@ legacy empty 在 SQL 中可为空但保留 last-good 可见内容；V2 complete 
 
 ## 回退与接手
 
-行为修复 E024 与结构迁移分开提交。若结构回退，保留来源错误检查和十个新页面契约；
+行为修复 E024/E028 与结构迁移 E026 分开提交。若结构回退，保留来源错误检查、deferred read
+和十三个新页面契约；E028 依赖 E026 接口，须先在隔离 checkout 适配行为再回退结构。
 先在隔离 checkout 验证这些契约，再选整合方案。不要回到 E023 红灯版本作为运行候选。
 更改单种 canonical/overlay 展示投影前，先读取本契约与原 updater/Cubit 调用，再登记 C1b。
