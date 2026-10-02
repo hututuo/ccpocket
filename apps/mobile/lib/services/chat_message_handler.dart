@@ -207,6 +207,32 @@ class ChatMessageHandler {
   /// Used to suppress duplicate git errors in the chat stream.
   bool _gitTipShown = false;
 
+  /// Decodes a history candidate without changing live handler state.
+  ///
+  /// A caller that performs admission must acknowledge tips only after it
+  /// applies the accepted update. Streaming accumulators remain untouched.
+  ChatStateUpdate prepareHistory(
+    HistoryMessage history, {
+    Set<String> ignoredToolUseIds = const {},
+    DateTime? historyTimestampAnchor,
+  }) => _handleHistory(
+    history.messages,
+    ignoredToolUseIds: ignoredToolUseIds,
+    timestampAnchor: historyTimestampAnchor,
+  );
+
+  /// Records the history tips that an accepting caller has actually applied.
+  void commitPreparedHistory(ChatStateUpdate update) {
+    for (final entry in update.entriesToAdd) {
+      if (entry case ServerChatEntry(
+        message: SystemMessage(subtype: 'tip', tipCode: 'git_not_available'),
+      )) {
+        _gitTipShown = true;
+        return;
+      }
+    }
+  }
+
   ChatStateUpdate handle(
     ServerMessage msg, {
     required bool isBackground,
@@ -231,12 +257,14 @@ class ChatMessageHandler {
         );
       case PastHistoryMessage(:final claudeSessionId, :final messages):
         return _handlePastHistory(messages, claudeSessionId: claudeSessionId);
-      case HistoryMessage(:final messages):
-        return _handleHistory(
-          messages,
+      case HistoryMessage():
+        final update = prepareHistory(
+          msg,
           ignoredToolUseIds: ignoredToolUseIds,
-          timestampAnchor: historyTimestampAnchor,
+          historyTimestampAnchor: historyTimestampAnchor,
         );
+        commitPreparedHistory(update);
+        return update;
       case ConversationQueueMessage(:final items, :final limit):
         return ChatStateUpdate(
           queuedInput: items.isNotEmpty ? items.first : null,
@@ -808,6 +836,7 @@ class ChatMessageHandler {
             plugins: m.plugins,
             pluginMetadata: m.pluginMetadata,
             isCodex: isCodexSession || m.provider == Provider.codex.value,
+            recordGitTip: false,
           );
           permissionMode = runtimeUpdate.permissionMode ?? permissionMode;
           executionMode = runtimeUpdate.executionMode ?? executionMode;
@@ -931,6 +960,7 @@ class ChatMessageHandler {
     List<String> plugins = const [],
     List<CodexPluginMetadata> pluginMetadata = const [],
     required bool isCodex,
+    bool recordGitTip = true,
   }) {
     List<SlashCommand>? commands;
     PermissionMode? permissionMode;
@@ -1065,7 +1095,8 @@ class ChatMessageHandler {
         ? (msg.claudeSessionId ?? (subtype == 'init' ? msg.sessionId : null))
         : null;
     // Track git tip to suppress duplicate git errors later
-    if (subtype == 'tip' &&
+    if (recordGitTip &&
+        subtype == 'tip' &&
         msg is SystemMessage &&
         msg.tipCode == 'git_not_available') {
       _gitTipShown = true;

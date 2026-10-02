@@ -795,3 +795,25 @@ root 增加两个原 Cubit/public history/原 scoped error stream 用例，不�
 只读准备不得记录“已显示”；共享 handler 仅在合法 candidate 实际应用后确认历史提示。
 原 live system / 其他 handle(History) 调用者保持兼容，已有 streaming 状态不复制、替换或重置。
 先独立修复并重放 handler/Cubit/投影/SQL 相关保护，再冻结新 SHA 做全量与同一 reviewer 复核。
+
+## E035 — History 准备只读，合法应用后确认提示
+
+父 red checkpoint：`6b103406935ec797cbcd28470092a826dffd7b17`。
+原 handler 新增 `prepareHistory`，沿用原 History 解码逻辑，但内部 system 解码不记录 Git tip；
+`commitPreparedHistory` 只确认实际接受历史中的提示。普通 `handle(History)` 仍准备后立即确认，
+live system 默认仍确认，不改变旧调用者入口。已有共享 handler 与 streaming/thinking 状态不替换或重置。
+V2 detached public history 先只读准备、canonical admission，再走原分页/_applyUpdate；
+成功应用后确认提示。拒绝路径不改变 handler 状态，已有合法 tip 的去重不会被后续拒绝清空。
+
+增加三个 handler 保护：准备阶段不抑制 error、确认后抑制；普通 History 和 live system 的原语义保留。
+两项原 Cubit Git tip 顺序、原四项 red、draft/身份正向保护均转绿。
+`c1b-history-handler-tip-green`：447 PASS / 1 FAIL，exit 1，27.540 秒；
+唯一 FAIL 是 root 命令使用不存在的 `test/local_history_paging_test.dart` 的加载失败，
+不是断言失败。原日志保留；实际文件为 `chat_session_local_history_paging_test.dart`。
+`c1b-history-handler-paging-path-corrected`：15 PASS，exit 0，2.834 秒，产品/测试 diff 身份相同。
+两份收据共同覆盖九个实际文件，不能把前一份 exit 1 改写为单次 462 PASS。
+`c1b-history-handler-target-analyze`：0 error/warning、十条原 Cubit 初始化 info，exit 0，15.043 秒。
+
+原 60e0c0dc 的全量 PASS 与复审 P2 均作为中间证据保留；本提交重新冻结完整生产/测试输入，
+全量 Mobile analyze/tests、格式与同一独立 reviewer 的修复复核仍须按新 SHA 执行。
+结构回退须保留 E032 的整体状态 admission 和本条提示修复，不能将准备/应用后确认两端拆开回退。

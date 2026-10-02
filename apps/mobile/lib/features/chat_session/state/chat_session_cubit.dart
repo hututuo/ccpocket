@@ -2184,14 +2184,17 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
     }
     try {
       final history = HistoryMessage(messages: messages);
-      final update = _handler.handle(
-        history,
-        isBackground: true,
-        isCodex: isCodex,
-        ignoredToolUseIds: const {},
-      );
+      final preparesCanonical = _bridge.supportsConversationSyncV2;
+      final update = preparesCanonical
+          ? _handler.prepareHistory(history)
+          : _handler.handle(
+              history,
+              isBackground: true,
+              isCodex: isCodex,
+              ignoredToolUseIds: const {},
+            );
       DetachedCanonicalHistoryCandidate? canonicalCandidate;
-      if (_bridge.supportsConversationSyncV2) {
+      if (preparesCanonical) {
         canonicalCandidate = prepareDetachedCanonicalHistory(
           canonicalEntries: update.entriesToAdd
               .where((entry) => entry is! StreamingChatEntry)
@@ -2210,6 +2213,9 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
         history,
         detachedCanonicalCandidate: canonicalCandidate,
       );
+      if (canonicalCandidate != null) {
+        _handler.commitPreparedHistory(update);
+      }
       if (state.status == ProcessStatus.starting) {
         emit(state.copyWith(status: ProcessStatus.idle));
       }

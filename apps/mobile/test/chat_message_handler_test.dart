@@ -567,6 +567,48 @@ void main() {
   });
 
   group('History handling — pending state restoration', () {
+    const gitTip = SystemMessage(subtype: 'tip', tipCode: 'git_not_available');
+    const gitError = ErrorMessage(
+      message: 'Git is unavailable for this project',
+      errorCode: 'git_not_available',
+    );
+
+    test('prepared history acknowledges git tips only after acceptance', () {
+      final candidate = handler.prepareHistory(
+        const HistoryMessage(messages: [gitTip]),
+      );
+      expect(candidate.entriesToAdd, hasLength(1));
+      expect(
+        handler.handle(gitError, isBackground: false).entriesToAdd,
+        hasLength(1),
+      );
+
+      handler.commitPreparedHistory(candidate);
+      expect(
+        handler.handle(gitError, isBackground: false).entriesToAdd,
+        isEmpty,
+      );
+    });
+
+    test('ordinary history handling retains git tip acknowledgement', () {
+      handler.handle(
+        const HistoryMessage(messages: [gitTip]),
+        isBackground: false,
+      );
+      expect(
+        handler.handle(gitError, isBackground: false).entriesToAdd,
+        isEmpty,
+      );
+    });
+
+    test('live system handling retains git tip acknowledgement', () {
+      handler.handle(gitTip, isBackground: false);
+      expect(
+        handler.handle(gitError, isBackground: false).entriesToAdd,
+        isEmpty,
+      );
+    });
+
     test('history never treats Bridge runtime ids as Codex thread ids', () {
       final update = handler.handle(
         const HistoryMessage(
