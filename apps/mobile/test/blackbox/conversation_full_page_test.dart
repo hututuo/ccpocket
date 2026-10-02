@@ -777,19 +777,24 @@ void main() {
 
             Map<String, Object?> presentationSnapshot() {
               final chat = mountedChat;
-              final streaming = BlocProvider.of<StreamingStateCubit>(
-                tester.element(find.byKey(const ValueKey('message_input'))),
-              ).state;
+              final input = find.byKey(const ValueKey('message_input'));
+              final streaming = input.evaluate().isEmpty
+                  ? null
+                  : BlocProvider.of<StreamingStateCubit>(
+                      tester.element(input),
+                    ).state;
               return {
                 'chatStatus': chat?.state.status.name,
                 'externalDesktopTurnActive':
                     chat?.state.externalDesktopTurnActive,
                 'runtimeProjection': chat?.diagnosticRuntimeProjection,
-                'streaming': {
-                  'isStreaming': streaming.isStreaming,
-                  'text': streaming.text,
-                  'thinking': streaming.thinking,
-                },
+                'streaming': streaming == null
+                    ? null
+                    : {
+                        'isStreaming': streaming.isStreaming,
+                        'text': streaming.text,
+                        'thinking': streaming.thinking,
+                      },
                 if (completionGate != null)
                   'completionGate': completionGate.snapshot(),
                 'rows': chatRows(),
