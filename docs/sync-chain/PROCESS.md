@@ -771,3 +771,27 @@ runtime 归属/过滤仍先由原 owning path 执行，再 compose 当前 overla
 
 本结构 checkpoint 等待固定 SHA 独立复审与最终全量 Mobile 门禁；尚不计作 C1b 最终完成。
 回退结构须保留 E032 的整体 admission 和四个红灯保护；candidate 接口的后续依赖按逆序处理。
+
+## E034 — 独立复审暴露 History 解码的提示副作用
+
+固定结构 SHA：`60e0c0dcfa98e3e72ed0be163b07cc9210aa5b53`，门禁启动时 clean。
+`c1b-final-full-mobile`：3310 PASS / 4 SKIPPED，exit 0，439.991 秒，--concurrency=1；
+`c1b-final-full-analyze`：0 error/warning、1017 info；`c1b-final-format`：四文件 0 changed。
+这些收据保留，但不能覆盖独立复审指出的缺口，也不是本批最终可接受源码点。
+
+GPT-6 Luna/max 对 `96d77007..60e0c0dc` 固定差异只读复审，确认原四项状态接受修复、
+canonical-only prepare / 后置 overlay compose 和 raw canonical receipt 来源成立。
+残余 P2：public history 在 admission 前调用共享 handler；History 中的
+`SystemMessage(subtype: tip, tipCode: git_not_available)` 会提前设置 `_gitTipShown`。
+含 duplicate canonical 的 History 被拒绝后，提示没有进入界面，但后续有效 Git error 会被抑制。
+这是原 handler 的真实解码副作用，不能把 E033 的“应用前拒绝”当作解码本身无副作用。
+
+root 增加两个原 Cubit/public history/原 scoped error stream 用例，不注入 handler 私有状态。
+`c1b-red-history-handler-tip`：1 PASS / 1 FAIL，exit 1，2.982 秒；
+拒绝后有效 error 丢失稳定 FAIL，已接受提示后拒绝仍保留原去重语义的正向保护 PASS。
+生产代码此时仍为固定 SHA；该测试 checkpoint 不作为运行候选。
+
+修复范围据实际 owner 扩到 `chat_message_handler.dart` 的 History 解码/确认接点：
+只读准备不得记录“已显示”；共享 handler 仅在合法 candidate 实际应用后确认历史提示。
+原 live system / 其他 handle(History) 调用者保持兼容，已有 streaming 状态不复制、替换或重置。
+先独立修复并重放 handler/Cubit/投影/SQL 相关保护，再冻结新 SHA 做全量与同一 reviewer 复核。

@@ -32,6 +32,12 @@ const _metadata = SystemMessage(
   projectPath: '/last-good-project',
   model: 'gpt-last-good',
 );
+const _gitTip = SystemMessage(subtype: 'tip', tipCode: 'git_not_available');
+const _gitError = ErrorMessage(
+  message: 'Git is unavailable for this project',
+  errorCode: 'git_not_available',
+  sessionId: _thread,
+);
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
@@ -182,6 +188,54 @@ void main() {
       _assistant,
     ], hasEarlier: false);
     expect(cubit.localHistoryPaging.value.hasMore, isFalse);
+  });
+
+  test('rejected history cannot suppress a later valid git error', () async {
+    final cubit = createCubit();
+    cubit.updateDetachedPreviewHistory(const [
+      _gitTip,
+      _user,
+      _assistant,
+      _assistant,
+    ]);
+    expectRejectedLastGood(cubit);
+    expect(
+      cubit.visibleEntries.whereType<ServerChatEntry>().any(
+        (entry) => entry.message == _gitTip,
+      ),
+      isFalse,
+    );
+
+    bridge.emitMessage(_gitError, sessionId: _thread);
+    await pumpEventQueue();
+    expect(
+      cubit.visibleEntries.whereType<ServerChatEntry>().map(
+        (entry) => entry.message,
+      ),
+      contains(_gitError),
+    );
+  });
+
+  test('accepted git tip remains acknowledged after a rejection', () async {
+    final cubit = createCubit();
+    cubit.updateDetachedPreviewHistory(const [_gitTip, _user, _assistant]);
+    expect(
+      cubit.visibleEntries.whereType<ServerChatEntry>().any(
+        (entry) => entry.message == _gitTip,
+      ),
+      isTrue,
+    );
+    cubit.updateDetachedPreviewHistory(const [_user, _assistant, _assistant]);
+    expectRejectedLastGood(cubit);
+
+    bridge.emitMessage(_gitError, sessionId: _thread);
+    await pumpEventQueue();
+    expect(
+      cubit.visibleEntries.whereType<ServerChatEntry>().map(
+        (entry) => entry.message,
+      ),
+      isNot(contains(_gitError)),
+    );
   });
 
   test(
