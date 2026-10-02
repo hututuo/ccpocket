@@ -21,13 +21,16 @@ main 已有未跟踪资料，不纳入本批、不覆盖；V4 是独立候选线
 | B1 | 单独抽最新轮次自动修复调度，迁移完整状态与取消责任 | A1/A2/A3 对这块所需闭环成立；抽取前后相同输入给出相同结果 |
 | B2 | 抽单种历史分页生命周期，再评估共享逻辑 | 请求身份、终态、deadline、过期响应及取消都有验证 |
 | C1a | 收拢页面异步缓存读取的 owner、dirty、接受与失效；已完成 E029 | 真实 SQL/原页面契约、完整读取接点、全量源码门禁与固定 SHA review |
-| C1b | 验证 V2 detached canonical/overlay 投影与接受状态，再评估窄接缝 | 沿用已有纯投影模块；同一事务/通知权威保留，overlay 不获得 canonical 写权 |
+| C1b | canonical prepare/admission/compose 及后置提示确认已完成 E037；R35 完成信号继续定位 | 十五项新保护与固定输入全量通过；先证明 pending focus 竞态，不继续扩大 runtime 抽取 |
 | C2 | 按领域逐批抽 Bridge handler | 连接、认证、序列、权限归属不重复实现 |
 | D | 按调用/版本矩阵退役旧分支，更新唯一文档入口 | 确认路径无支持用途；删除对应状态与文档，而非只藏入口 |
 
 第一批 A0–A3 / B1、B2、C1a 分别通过 E010/E021/E029 源码门禁。
 C1a 的范围保留在 [C1-ENTRY](C1-ENTRY.md)，责任与回退见 PREVIEW-READ-LIFECYCLE；
-后续先按 [C1B-ENTRY](C1B-ENTRY.md) 验证已有投影与 Cubit 状态清理，再决定是否抽取。
+C1b 已在原投影模块收拢 canonical 候选准备/接受，并保留 Cubit 的状态应用与 overlay 身份筛选。
+接缝与回退见 [C1B-ENTRY](C1B-ENTRY.md) / DETACHED-CANONICAL-ADMISSION。
+当前先按 [RUNTIME-ITEM-BOUNDARY](RUNTIME-ITEM-BOUNDARY.md) 证明订阅待确认时的焦点遗漏，
+再决定完成信号修复；运行/展示链未据本次全量 PASS 整体验收。
 后续大类不会在同一批重写。
 任何失败先记录并定位；在选定段的正确结果仍无法判定时停止扩大抽取范围，继续补证据。
 

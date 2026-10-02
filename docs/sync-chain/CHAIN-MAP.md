@@ -1,6 +1,6 @@
 # 当前接收链路地图
 
-起始链路与各批新增责任由下表及 B1/B2/C1a 章节说明，当前验证身份见 PROCESS。
+起始链路与各批新增责任由下表及 B1/B2/C1a/C1b 章节说明，当前验证身份见 PROCESS。
 它描述源码调用关系，不能单凭存在调用就声称运行通畅。
 
 | 段 | owning path | 输入/输出与权威 | 需要证明的完成条件 |
@@ -13,7 +13,9 @@
 | SQLite | features/session_list/cache/session_catalog_cache_repository.dart | staging → hot window；受 revision/identity/预算约束 | 原子提交；partial 保留 last-good；完整性不误报 |
 | 缓存通知 | SyncService._publishCacheUpdate / syncUpdates | 本地 commit epoch 与数据变化事件 | 有效内容/coverage 变化可被观察；不改 Provider revision |
 | 页面重读 | codex_session_screen.dart._loadDurablePreview / durable_preview_read_lifecycle.dart | 原 updates/SQL window；helper 只拥有 ticket/dirty/失效 | 新内容到达页面；旧读/错误/finally 不影响新目标；受阻补读可恢复 |
-| 展示投影 | chat_session_cubit.dart / chat_process_layout.dart | committed 内容与独立 live overlay | 稳定顺序、无重复、工具归属正确、partial 不清空可读内容 |
+| 历史准备与接受 | handler.prepareHistory / prepareDetachedCanonicalHistory / 原 Cubit | 无副作用解码与不可变 canonical 候选；拒绝保留 last-good | duplicate 拒绝先于设置/审批/queue/paging；receipt 仅来自原 canonical |
+| 展示投影与后置确认 | candidate.compose / 原 Cubit / handler.commitPreparedHistory / layout | 当前合法 overlay 与已接受 canonical；提示在实际应用后确认 | 无重复、工具归属正确；拒绝不消费提示/receipt/alias |
+| runtime item 完成 | Bridge.sessionMessage → focused runtime_overlay → Service → Cubit 原 streaming handler | 独立 source/runtime/authority/turn 与 item 事实；不写 SQL | 订阅实际焦点与客户端意图一致，完成事件能关闭对应 transient；R35 待证明 |
 
 ## 不同状态不能互相替代
 
@@ -82,8 +84,22 @@ dirty 在 follow-up 暂因 source conflict 不能开始时保留；真正 begin 
 不具有 canonical history 写权，不能机械套用显式 attachment 的失效规则。
 
 真实 SQL/页面与生命周期保护见 R23–R28；原 Bridge/RPC 黑盒仍经同一 Service/Repository/页面。
-下一批按 C1B-ENTRY 验证 V2 detached 展示分支；该分支已调用 `projectDetachedTimeline`，
-shared legacy/paged mirror 的 weaving 算法另有调用边界，不能无证据统一替换。
+shared legacy/paged mirror 的 weaving 算法另有调用边界，C1b 没有统一替换它们。
+
+## C1b 后的 canonical 接受边界
+
+原 handler 的 `prepareHistory` 只解码；`prepareDetachedCanonicalHistory` 在原投影模块
+冻结 canonical 输入，准备 alias 索引、duplicate 判定和原输入的 client receipt 证据。
+duplicate 候选在原 Cubit 的 public durable history 入口整体拒绝，设置/审批/queue/paging 不先应用。
+合法候选进入原 `_applyUpdate`，由原 owner 先筛选当前 overlays，再以工作副本 `compose`；
+应用后消费对应 receipt/alias，并确认历史 Git tip。overlay enrich 的 client ID 不生成 canonical receipt。
+
+普通 handler History/live 与 `projectDetachedTimeline` API 保持入口兼容；
+SQLite、通知、C1a reader 与 shared weaving 仍属于原 owner。
+canonical admission 的保护与源码门禁见 R30–R34 / E037。
+R35 是另一条 runtime 完成信号路径：两次失败订阅没有 focused，客户端诊断却已有焦点，
+缺少 runtime_overlay 时 canonical A/B 可以正确落库但仍被合并进 transient。
+订阅发送与接受之间是否遗漏焦点补发须用可控顺序证明；不能放宽 Bridge 焦点/authority fence。
 
 ```mermaid
 flowchart LR

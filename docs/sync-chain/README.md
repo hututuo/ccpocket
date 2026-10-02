@@ -32,9 +32,12 @@ Bridge 与依赖输入未变，继承 B2 门禁。完整收据与回退依赖见
 
 C1b 当前已修复无效 canonical 仍改变设置/审批/队列/分页，以及解码提前确认 Git tip 的遗漏；
 在原投影模块中分开 canonical 准备、接受与后置 overlay 合成，新增十五项保护。
-产品冻结 `2f64e383` 的最新全量 **3314 PASS / 4 SKIPPED / 1 FAIL**，不能标记整批门禁完成。
-第二条过程消息独立可见性失败已缩小到 runtime 完成信号路径；SQL/Cubit 内容正确，stream 未关闭。
-原失败、后续重放和新增观测分别保留，见 [完成信号定位](RUNTIME-ITEM-BOUNDARY.md) 与 PROCESS E036。
+产品冻结 `2f64e383`，加入观测后的固定输入 `d0f164e5` 全量为 **3315 PASS / 4 SKIPPED**；
+Bridge **2546 PASS / 1 SKIPPED**，build/typecheck、格式、完整诊断基线比对及独立复核通过。
+canonical admission 的源码门禁完成，收据见 PROCESS E037。
+之前两次第二条过程消息可见性 FAIL 仍未关闭：SQL/Cubit 内容正确，stream 未关闭；
+失败订阅没有携带焦点，成功订阅带焦点。下一步证明订阅等待确认期间的焦点竞态，
+不能以这次观测输入 PASS 宣称完成信号已修复。见 [完成信号定位](RUNTIME-ITEM-BOUNDARY.md)。
 
 接手顺序：
 
@@ -44,7 +47,8 @@ C1b 当前已修复无效 canonical 仍改变设置/审批/队列/分页，以�
 4. [过程账本](PROCESS.md)：每批动机、修改位置、测试和下一步。
 5. [接手与验证操作](RUNBOOK.md)：责任边界、重跑命令、回退与下批入口。
 6. [C1a 范围与契约](C1-ENTRY.md)、[读取生命周期](PREVIEW-READ-LIFECYCLE.md)：已完成的读取接缝。
-7. [C1b 入口](C1B-ENTRY.md)：先验证现有 V2 投影与 Cubit 状态清理，再决定抽取接口。
+7. [C1b 入口](C1B-ENTRY.md)、[历史接受职责](DETACHED-CANONICAL-ADMISSION.md)：已实现接缝与回退依赖。
+8. [完成信号定位](RUNTIME-ITEM-BOUNDARY.md)：当前 R35 事实、待证明竞态与后续执行边界。
 
 过程记录不得以旧证据覆盖新失败。源码测试通过、真实 Provider、模拟器、真机、部署和发布分别报告。
 这组文档与对应代码一同提交；原始测试输出保存为独立文件，账本记录命令、身份、结果和证据路径。

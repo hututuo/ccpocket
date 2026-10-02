@@ -5,11 +5,13 @@
 - 时间：2026-10-02（Asia/Taipei）。
 - 分支：`codex/sync-chain-extraction-20261001`。
 - 起始 SHA：`930f1267e949c6cf2095761cc71c43cca08c6dc3`。
-- 阶段：A0–A3 / B1、B2 与 C1a 已完成；C1b 已修复四项状态接受及 History 提示副作用，最终门禁仍在定位 R35。
+- 阶段：A0–A3 / B1、B2 与 C1a 已完成；C1b canonical admission 源码门禁完成，R35 完成信号仍在定位。
 - C1b 当前产品冻结 SHA：`2f64e383cc42776385ec22420d7ec299792bb9c9`，全量启动时 clean。
-- 最新全量为 3314 Mobile PASS / 4 SKIPPED / 1 FAIL（--concurrency=1），不能称为全量通过。
+- 最新固定测试/fixture 输入：`d0f164e54fd3c076c3940f21a75e05f1e2a00792`，门禁启动时 clean。
+- 最新全量 Mobile 3315 PASS / 4 SKIPPED（--concurrency=1），Bridge 2546 PASS / 1 SKIPPED；build/typecheck/格式通过。
 - analyze 0 error/warning，1017 既有 info 完整文本逐项无新增；该产品固定 SHA 复审无剩余可证明 P0–P2。
-- 当前失败观测与回退见 E034–E036；职责见 DETACHED-CANONICAL-ADMISSION，下一步先看 RUNTIME-ITEM-BOUNDARY。
+- 此前产品全量与观测组合两次 R35 FAIL 未关闭，最新 PASS 不表示该问题已修复。
+- 当前证据与回退见 E034–E037；职责见 DETACHED-CANONICAL-ADMISSION，下一步按 RUNTIME-ITEM-BOUNDARY 证明 pending focus 竞态。
 - E024 的历史并发折叠等待 FAIL 尚未归属；最终串行 PASS 不证明默认并发或设备/运行链验收。
 - 最新提交与验证身份在后续条目登记；不能从本节推断部署状态。
 
@@ -850,3 +852,37 @@ runtime overlay event count=0。两条已提交消息被放入 collapsed interme
 不会把 runtime 正文改作 canonical writer，也不会用删除断言或延长等待获得通过。
 下一步见 RUNTIME-ITEM-BOUNDARY：先明确产生/发送/丢弃条件并建立确定性 red，再决定行为修复；
 后续 runtime 隔离队列结构批暂不实施。新观测输入按新固定 SHA 另跑最终检查，不继承旧全量绿灯。
+
+## E037 — canonical admission 固定输入门禁与焦点差异
+
+生产源码保持 `2f64e383cc42776385ec22420d7ec299792bb9c9`；
+完整测试/fixture 输入固定为 `d0f164e54fd3c076c3940f21a75e05f1e2a00792`，以下各门禁启动时 clean。
+原始 JSON/log 仍在 `/Users/developer/AI agent/Codex/_tmp/ccpocket-sync-chain-20261001/`，不覆盖旧失败。
+
+| 收据 label | 结果 | 退出码 / 时长 |
+|---|---|---|
+| c1b-observation-final-bridge-build | Bridge build PASS，未替换运行服务 | 0 / 4.894 秒 |
+| c1b-observation-final-full-mobile | 3315 PASS / 4 SKIPPED，串行全量，原五个黑盒与十五项新保护均通过 | 0 / 399.411 秒 |
+| c1b-observation-final-full-bridge | 2546 PASS / 1 SKIPPED，124 files PASS / 1 SKIPPED | 0 / 24.375 秒 |
+| c1b-observation-final-full-analyze | 0 error/warning，1017 info；完整正文含续行与重复计数比对基线 added/removed 为空 | 0 / 36.018 秒 |
+| c1b-observation-final-format | 七个本批 Dart 文件，0 changed | 0 / 1.042 秒 |
+| c1b-observation-final-bridge-typecheck | noEmit PASS，在 Bridge 全量后执行 | 0 / 4.430 秒 |
+
+`c1b-observation-final-analysis-comparison.json` 保存完整诊断比对；
+产品固定 SHA 的复审见 `c1b-independent-review-2f64e383.json`。
+同一 GPT-6 Luna/max 对 d0 相对产品 SHA 的两个观测文件另做有界只读复核：
+原断言、15 秒期限、segment 输入/路由不变，失败诊断不覆盖原异常，无生产源码改动或额外写入。
+局限：UI 与 SQL 快照跨 await，非原子；origin 在生产 listener 之前采样，不能代替实际资格判定，
+增加回调执行成本也可能影响后续交错。因此此 PASS 不能关闭 R35。
+
+root 继续对照两次 FAIL 与两次全量 PASS 的原始 client/Bridge 帧，发现更具体的关联：
+FAIL 的初始 subscribe 均没有 focused，随后无 focus 请求，失败 diagnostic 却已记录客户端焦点；
+PASS 的初始 subscribe 均带 focused，收到 A/B runtime_overlay。canonical B payload 仍一致。
+Bridge 的 focusedKey 过滤是原授权边界，不能放宽；待验证 owner 缩到 Mobile Service 的
+subscribe 已发出、syncBegin 尚未接受时改变焦点，是否遗漏确认后的补发。
+对照文件为 `c1b-runtime-overlay-focus-comparison.json`；这一步没有修改产品，也未宣称归因完成。
+
+更新 README、PLAN、CHAIN-MAP、TEST-MATRIX、C1B-ENTRY、RUNBOOK 与完成信号入口，
+使当前产品/测试身份、已完成职责、保留失败、回退依赖与下一步一致。
+下一步先在原 Service/真实 SQL 测试建立可控焦点 red，再决定窄行为修复；暂不扩大 runtime 结构。
+真实 Provider/设备/生产 Bridge/云 CI/OTA/发布 NOT_RUN；原生 UI 自动化工具缺失为 BLOCKED。
