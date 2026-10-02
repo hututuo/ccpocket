@@ -2,10 +2,10 @@
 
 ## 当前断点
 
-- 时间：2026-10-01（Asia/Taipei）。
+- 时间：2026-10-02（Asia/Taipei）。
 - 分支：`codex/sync-chain-extraction-20261001`。
 - 起始 SHA：`930f1267e949c6cf2095761cc71c43cca08c6dc3`。
-- 阶段：A0–A3 / B1、B2 与 C1a 已完成；C1b 仅登记候选入口，尚未修改产品代码。
+- 阶段：A0–A3 / B1、B2 与 C1a 已完成；C1b 已开始原 V2 detached 投影接受/清理契约盘点，见 E030。
 - C1a 最终验证源码 SHA：`151c04752e0ce00568c73a6d9522bfe09c6a107c`，全量启动时 clean。
 - 3300 Mobile PASS / 4 SKIPPED（--concurrency=1）；Bridge 同输入继承 2546 PASS / 1 SKIPPED。
 - analyze 0 error/warning，1017 既有 info 逐项无新增；固定 SHA 独立复审无剩余 P0–P2。
@@ -684,3 +684,29 @@ E028 依赖 E026 的接口，结构回退须在隔离 checkout 适配该行为�
 下一批按 C1B-ENTRY 先验证 V2 detached 的已有 `projectDetachedTimeline` 与 Cubit 接缝，
 独立登记父 SHA、状态接受/清理契约和红灯，不新造 reducer 或把共享 legacy/paged mirror 一同重写。
 C1b 目前只有源码盘点与入口文档，不借本批 PASS 宣称该范围的缺口已闭合。
+
+## E030 — C1b 起点与 canonical 候选接受接缝
+
+起点：`96d77007e8ddb4a1c8adc4dc8487d18534812c02`，独立 worktree clean；
+日期 2026-10-02（Asia/Taipei），原产品/测试输入仍与 C1a 验证点 `151c0475` 相同。
+继续使用同一隔离分支；main、旧修复 checkout、设备和生产服务不在本批操作范围。
+完整读 HANDOFF/CLAUDE 及相关 decisions 后，按 C1B-ENTRY 选定一个 V2 detached history 接缝。
+
+实际链路：`updateDetachedPreviewHistory` → 原 handler 的 HistoryMessage → `_applyUpdate` →
+`_mergeHistoryWithPreservedLiveEntries` 的 V2 detached 分支 → 原 `projectDetachedTimeline`。
+纯投影已存在；shared legacy/paged mirror weaving 和 SQLite/wire 不在本批重写。
+当前重复 canonical 检查在合并分支中返回 last-good entries；是否仍应用候选的设置/交互等状态，
+须用原 Cubit 契约确认，不能只凭条目列表测试宣布候选拒绝完整。
+History 本身不会进入 `_recordOutgoingDraftEvidence` 的清理 case，不能臆断它会直接删除 draft。
+
+本批 root 拥有诊断、测试、产品实现、整合和验证。原 GPT-6 Luna/max worker 只读盘点既有
+原 Cubit、纯投影、SQL 页面测试的实际覆盖，使用 native mailbox，不改文件或跑服务。
+允许生产改动仅限 Cubit 的 V2 detached candidate/admission 接缝及原投影模块；
+新增窄模块须先证明它真正独占职责，不增加 reducer、writer、总线或整个 Cubit/Page 依赖。
+相关测试由原 Cubit/draft/runtime overlay 入口与真实 SQL 页面观察提供，不能手工注入正确状态。
+
+证据顺序：登记范围 → 重放选定原入口基线 → 新契约；若有红灯则独立行为 fix；
+行为冻结后再收拢选定职责，完成 Mobile 全量 analyze/tests、固定 SHA 独立 review，更新回退与矩阵。
+C1a 同输入全量收据只作基线；C1b 新产品行为须有自己的最终门禁。
+E024 并发折叠等待仍未归属，保留原断言和输入/SQL/Cubit/layout 轨迹，不延长等待或删除断言。
+当前本条登记时产品未变，C1b 新契约/门禁尚未运行。
