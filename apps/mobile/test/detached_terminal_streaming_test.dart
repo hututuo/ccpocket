@@ -582,6 +582,28 @@ void main() {
     );
   }
 
+  test('runtime identity participates in duplicate status fencing', () async {
+    final cubit = createCubit();
+    await streamFinal();
+    bridge.emitMessage(
+      const StatusMessage(status: ProcessStatus.idle),
+      sessionId: _runtime,
+    );
+    await pumpEventQueue();
+    for (final runtime in ['runtime-other', _runtime]) {
+      cubit.updateDetachedProviderStatus(
+        _status(
+          activity: 'idle',
+          runtime: runtime,
+          observedAt: '2026-10-02T11:00:02.000Z',
+        ),
+        sourceFingerprint: _source,
+      );
+      expect(streaming.state.isStreaming, runtime != _runtime);
+    }
+    expect(streaming.state.text, isEmpty);
+  });
+
   test('legacy status cannot acquire the new terminal cleanup path', () async {
     final cubit = createCubit();
     await streamFinal();

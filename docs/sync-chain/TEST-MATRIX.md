@@ -45,8 +45,8 @@
 | R38 | bootstrap idle / 未入库 completion 与终态清理 | 未确认 turn 的 idle 不抢走新 delta；filter 在 alias reset 前执行，runtime completion 无 canonical 写权 | PASS 两项行为 red→green、原 receiver 未改且恢复；最终全量待跑。E044 首修对应两项缺口和dcf0b086完整3340 PASS/4 SKIPPED/1 FAIL保留；E045/E048 |
 | R39 | 旧 terminal 接纳晚于新 raw delta / coalesced pending delta | 旧终态不能清后来的增量；下一次匹配 socket+committed idle 仍能结束流 | PASS 11 项 public 契约，text/thinking append 与 reset 由原 StreamingStateCubit 独占 revision；两项 red 保留；最终全量待跑，尚非真实双 turn/设备回放；E047/E048 |
 | R40 | turnless working / 暂缺 provider projection 后的 socket 完成 | 当前 bridgeRuntime 权威 idle 与未变化 socket ticket 可退休流；普通 idle、无权威、外部 host 不取得新清流资格 | PASS 十六项 public 契约，五项 red→green及七黑盒；固定SHA全量待跑。与095cab00完整原页面FAIL的直接关系尚未证明；E049–E051 |
-| R41 | A→B→C，B 状态在 C socket idle 前/后才被投影 | 新清理须核对远端 runtime 身份，不让同源旧缓存退休 C 正文；C 后续合法终态仍结束 | FAIL 两种 public 入站顺序及缺字段反向保护；16 PASS/3 FAIL，原候选不获验收；E052 / RUNTIME-STATUS-IDENTITY |
-| R42 | status runtime 身份的 Bridge 生产 / JSON / SQLite | 来自真实 runtime snapshot；round trip 保留；appServer/失效转换不继承；旧字段缺失可读 | FAIL producer 缺身份、Dart JSON round trip 丢身份已 red；其余门禁 NOT_RUN；E052 |
+| R41 | A→B→C，B 状态在 C socket idle 前/后才被投影 | 新清理须核对远端 runtime 身份，不让同源旧缓存退休 C 正文；C 后续合法终态仍结束 | PASS 20项terminal契约及七黑盒；三项red保留，新增身份是新清理必需条件；最终全量/复核待冻结；E052/E053 / RUNTIME-STATUS-IDENTITY |
+| R42 | status runtime 身份的 Bridge 生产 / JSON / SQLite | 来自真实 runtime snapshot；round trip 保留；appServer/失效转换不继承；旧字段缺失可读 | PASS 新producer、JSON及SQLite close/reopen保护、同时间身份签名与Bridge186项回归/新build/原七黑盒；最终全量待冻结；red保留，E052/E053 |
 
 R09/R10 的最上游是隔离 Provider fixture，使用真实 Bridge、协议、SQLite 和页面相关代码；
 即使 PASS，也只证明接收闭环，不冒充 R13/R14。

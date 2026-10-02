@@ -1659,6 +1659,55 @@ void main() {
     expect(state.statusState, 'status-state-2');
   });
 
+  test('runtime status identity survives SQLite close and reopen', () async {
+    final target = SessionCatalogCacheTarget.fromBridge(
+      bridgeInstanceId: 'bridge-status-runtime',
+      codexSourceId: 'source-status-runtime',
+    );
+    for (final runtime in ['runtime-before', 'runtime-current']) {
+      await repository.applyConversationStatusBatch(
+        target: target,
+        statusState: 'status-$runtime',
+        changes: [
+          ConversationSyncV2Status(
+            provider: 'codex',
+            providerSessionId: 'thread-status-runtime',
+            activity: 'idle',
+            attention: 'none',
+            result: 'completed',
+            runtimeAttachment: 'loaded',
+            source: 'bridgeRuntime',
+            confidence: 'authoritative',
+            observedAt: '2026-10-03T00:00:00.000Z',
+            executionHost: 'bridge',
+            authorityGeneration: 'authority-$runtime',
+            runtimeSessionId: runtime,
+          ),
+        ],
+      );
+    }
+    await repository.close();
+    database = SessionCatalogCacheDatabase(
+      databasePath: databasePath,
+      openDatabase: openFfi,
+    );
+    repository = SessionCatalogCacheRepository(database);
+    expect(
+      (await repository.loadConversationStatuses(
+        target,
+      )).single.runtimeSessionId,
+      'runtime-current',
+    );
+    final status = await repository.loadConversationStatus(
+      target: target,
+      provider: 'codex',
+      providerSessionId: 'thread-status-runtime',
+    );
+    expect(status?.runtimeSessionId, 'runtime-current');
+    expect(status?.authorityGeneration, 'authority-runtime-current');
+    expect(status?.result, 'completed');
+  });
+
   test(
     'merges sparse Codex settings but lets a complete snapshot clear them',
     () async {

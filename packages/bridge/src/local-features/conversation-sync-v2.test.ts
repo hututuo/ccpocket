@@ -10274,6 +10274,11 @@ describe("ConversationSyncV2FeatureHandler", () => {
         authorityGeneration: "authority-current",
       }),
     );
+    expect(
+      events(fixture.sent, client, "status_changes")
+        .flatMap((event) => event.changes)
+        .find((status) => status.authorityGeneration === "authority-current"),
+    ).toHaveProperty("runtimeSessionId", "runtime-current");
     expect(fixture.catalogReader).toHaveBeenCalledTimes(initialCatalogReads);
 
     runtimeStates = [
@@ -10306,6 +10311,11 @@ describe("ConversationSyncV2FeatureHandler", () => {
         authorityGeneration: "authority-reopened",
       }),
     );
+    expect(
+      events(fixture.sent, client, "status_changes")
+        .flatMap((event) => event.changes)
+        .find((status) => status.authorityGeneration === "authority-reopened"),
+    ).toHaveProperty("runtimeSessionId", "runtime-reopened");
     expect(fixture.catalogReader).toHaveBeenCalledTimes(initialCatalogReads);
     fixture.handler.close();
   });
@@ -10321,6 +10331,8 @@ describe("ConversationSyncV2FeatureHandler", () => {
       activeTurnId: "turn-before-failure",
       controlState: "steerable",
       authorityGeneration: "authority-before-failure",
+      source: "bridgeRuntime",
+      runtimeSessionId: "runtime-before-failure",
     };
     const failure = new Error("app-server status unavailable");
     const fixture = createFixture(
@@ -10363,6 +10375,10 @@ describe("ConversationSyncV2FeatureHandler", () => {
     expect(
       internal.catalog.get("codex\0thread-status-failure")?.status
         .authorityGeneration,
+    ).toBeUndefined();
+    expect(
+      internal.catalog.get("codex\0thread-status-failure")?.status
+        .runtimeSessionId,
     ).toBeUndefined();
     fixture.handler.close();
   });

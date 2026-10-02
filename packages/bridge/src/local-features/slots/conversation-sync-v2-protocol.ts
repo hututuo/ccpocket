@@ -173,6 +173,8 @@ export interface ConversationSyncStatus extends ConversationSyncTarget {
   controlState?: ConversationSyncControlState;
   /** Opaque generation fencing control-plane actions and late observations. */
   authorityGeneration?: string;
+  /** Actual Bridge attachment that produced this status; absent for provider observations. */
+  runtimeSessionId?: string;
 }
 
 export interface ConversationSyncNextState {

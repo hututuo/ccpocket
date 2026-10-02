@@ -1328,3 +1328,31 @@ Dart protocol新增持久JSON round trip和旧版/长度/类型约束。
 方案与兼容/回退关系见RUNTIME-STATUS-IDENTITY.md。新增可选身份由Bridge已有bridgeSessionId提供，
 Cubit的新清理核对当前bound runtime；旧Bridge保留原阅读/completion/validation。
 这批改变Bridge源码后必须重新build及验Bridge完整门禁，不再继承E041。
+
+## E053 — 用远端 attachment 身份限定新增终态清理
+
+red输入 `ac4d72fc10081f37dada742e1dd38b6261d487fb`。
+Bridge statusFromRuntime把已有snapshot.bridgeSessionId写入可选runtimeSessionId；
+Provider/shared-control/失效转换剥离旧身份，身份本身不加入hasExplicitRuntimeAuthority。
+Dart可选字段验证/序列化保留身份，无SQL列或schema迁移。Cubit签名包含runtime身份，
+同时间身份变化不能被旧duplicate guard吞掉；新terminal分支必须精确匹配当前bound runtime。
+原控制lease接纳机制、RPC、source/time/turn/authority与visual pending接点不在本批重写。
+
+新增正向保护：相同observedAt只有runtime身份改变仍可被接纳；
+实际SQLite同时间替换身份并close/reopen后，list/single status读取都保留当前runtime与authority。
+Bridge原runtime生命周期测试核对replacement/reopened两种身份，watchdog失败撤权后不保留旧runtime ID。
+
+冻结red父输入加七文件产品/测试diff，SHA256 `0ea27cc8b00381301ef5e30e1aaebb440ff3ff11b8c61c35d936457fec85e4c5`：
+
+| 收据 | 结果 | 退出码 / 时长 |
+|---|---|---|
+| c1c-runtime-status-identity-mobile-focused | 初始十九项terminal与十九项protocol共38 PASS | 0 / 3.020秒 |
+| c1c-runtime-status-identity-mobile-contracts | 二十项terminal、protocol与真实SQLite相关共103 PASS | 0 / 7.981秒 |
+| c1c-runtime-status-identity-bridge-contracts | conversation-sync-v2整文件186 PASS | 0 / 18.145秒 |
+| c1c-runtime-status-identity-build | 新Bridge tsc/native helper build通过；host Node26/npm11 | 0 / 5.769秒 |
+| c1c-runtime-status-identity-blackbox | 原三文件七黑盒PASS；使用新dist及Node22 | 0 / 30.863秒 |
+
+原两个receiver、原page fold/期限/恢复/RPC断言不改；held-final在实际新status身份经解码/SQL/updater后成立。
+完整Bridge/Mobile及最终固定SHA复核留待本轮候选冻结，不能把分项写成已完成验收。
+下一批只梳理隔离queue的容量、byte退休与future turn交错；先公开契约，确定缺陷后独立修，再搬单一owner。
+同源旧status可能误建原控制lease的既有风险独立记录，当前视觉修复没有证明mutation全链正确。

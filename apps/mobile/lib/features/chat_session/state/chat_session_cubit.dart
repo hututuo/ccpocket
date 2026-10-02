@@ -2340,6 +2340,7 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
       status.activeTurnId ?? '',
       status.controlState ?? '',
       status.authorityGeneration ?? '',
+      status.runtimeSessionId ?? '',
     ].join('\u0000');
     if (previousObservedAt == observedAt &&
         signature == _detachedProviderStatusSignature) {
@@ -2409,10 +2410,12 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
           status.source == 'bridgeRuntime' &&
           executionHost == 'bridge' &&
           status.runtimeAttachment == 'loaded' &&
+          status.runtimeSessionId?.trim().isNotEmpty == true &&
+          status.runtimeSessionId?.trim() == _detachedLiveRuntimeSessionId &&
           _hasCurrentDetachedAuthorityLease &&
           _hasUnchangedDetachedTerminalVisualTicket) {
         // Status and item completion travel through separate observers. A
-        // current Bridge terminal projection can retire the socket output
+        // Bridge terminal projection naming this attachment can retire output
         // even if an incomplete status cleared its control turn id. No
         // delta or reset may have followed the socket idle boundary.
         _clearDetachedVisualTimeline();

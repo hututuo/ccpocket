@@ -2231,6 +2231,7 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
       activeTurnId: request.turnId,
       controlState: brokerReady && request.live ? "readOnly" : "unavailable",
     };
+    delete next.runtimeSessionId;
     this.rememberSharedRuntimeStatus(key, next);
     if (this.catalog.has(key)) changedKeys.add(key);
   }
@@ -5148,6 +5149,7 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
           ? { activeTurnId: snapshot.turnId }
           : {}),
       };
+      delete next.runtimeSessionId;
       if (status !== "inProgress") {
         delete next.activeTurnId;
         delete next.attentionRequestId;
@@ -10539,6 +10541,7 @@ function sharedControlProviderSnapshotStatus(
     executionHost: _executionHost,
     controlState: _controlState,
     authorityGeneration: _authorityGeneration,
+    runtimeSessionId: _runtimeSessionId,
     ...rest
   } = status;
   return {
@@ -10557,6 +10560,7 @@ function sharedControlTransitionStatus(
   const {
     controlState: _controlState,
     authorityGeneration: _authorityGeneration,
+    runtimeSessionId: _runtimeSessionId,
     ...rest
   } = previous;
   return {
@@ -10744,6 +10748,7 @@ function statusFromRuntime(
     ...(state.authorityGeneration
       ? { authorityGeneration: state.authorityGeneration }
       : {}),
+    runtimeSessionId: state.bridgeSessionId,
   };
 }
 
@@ -10842,6 +10847,7 @@ function unavailableProviderStatus(
   const {
     controlState: _controlState,
     authorityGeneration: _authorityGeneration,
+    runtimeSessionId: _runtimeSessionId,
     ...rest
   } = previous;
   return {

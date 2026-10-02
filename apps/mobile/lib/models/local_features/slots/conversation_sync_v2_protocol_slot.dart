@@ -382,6 +382,7 @@ class ConversationSyncV2Status extends ConversationSyncV2Target {
     this.activeTurnId,
     this.controlState,
     this.authorityGeneration,
+    this.runtimeSessionId,
   });
 
   final String activity;
@@ -411,6 +412,10 @@ class ConversationSyncV2Status extends ConversationSyncV2Target {
 
   /// Opaque authority epoch paired with [activeTurnId] and [controlState].
   final String? authorityGeneration;
+
+  /// Bridge attachment that produced this status. Older Bridges omit it.
+  /// A local runtime generation cannot substitute for this remote identity.
+  final String? runtimeSessionId;
 
   factory ConversationSyncV2Status.fromJson(Map<String, dynamic> json) {
     final status = ConversationSyncV2Status(
@@ -458,6 +463,11 @@ class ConversationSyncV2Status extends ConversationSyncV2Target {
       authorityGeneration: _conversationSyncOptionalString(
         json,
         'authorityGeneration',
+        maximumLength: 256,
+      ),
+      runtimeSessionId: _conversationSyncOptionalString(
+        json,
+        'runtimeSessionId',
         maximumLength: 256,
       ),
     );
@@ -527,6 +537,7 @@ class ConversationSyncV2Status extends ConversationSyncV2Target {
     'activeTurnId': ?activeTurnId,
     'controlState': ?controlState,
     'authorityGeneration': ?authorityGeneration,
+    'runtimeSessionId': ?runtimeSessionId,
   };
 }
 
