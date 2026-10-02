@@ -127,6 +127,47 @@ void main() {
     );
   });
 
+  test('runtime status identity survives the durable JSON round trip', () {
+    final wire = <String, dynamic>{
+      'provider': 'codex',
+      'providerSessionId': 'thread-runtime-identity',
+      'activity': 'idle',
+      'attention': 'none',
+      'result': 'completed',
+      'runtimeAttachment': 'loaded',
+      'source': 'bridgeRuntime',
+      'confidence': 'authoritative',
+      'observedAt': '2026-10-03T00:00:00.000Z',
+      'executionHost': 'bridge',
+      'controlState': 'writable',
+      'authorityGeneration': 'authority-runtime-identity',
+      'runtimeSessionId': 'runtime-schema',
+    };
+    final status = ConversationSyncV2Status.fromJson(wire);
+    expect(status.toJson(), containsPair('runtimeSessionId', 'runtime-schema'));
+    final persisted = jsonDecode(jsonEncode(status.toJson()));
+    expect(
+      ConversationSyncV2Status.fromJson(
+        persisted as Map<String, dynamic>,
+      ).toJson(),
+      containsPair('runtimeSessionId', 'runtime-schema'),
+    );
+    final legacy = Map<String, dynamic>.from(wire)..remove('runtimeSessionId');
+    expect(
+      ConversationSyncV2Status.fromJson(legacy).toJson(),
+      isNot(contains('runtimeSessionId')),
+    );
+    for (final invalid in [42, 'r' * 257]) {
+      expect(
+        () => ConversationSyncV2Status.fromJson({
+          ...wire,
+          'runtimeSessionId': invalid,
+        }),
+        throwsFormatException,
+      );
+    }
+  });
+
   test(
     'bounds legacy Bridge catalog display text instead of dropping sync',
     () {

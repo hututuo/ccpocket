@@ -41,21 +41,25 @@ ConversationSyncV2Status _status({
   String? turn = _turn,
   String source = 'bridgeRuntime',
   String? executionHost = 'bridge',
-}) => ConversationSyncV2Status(
-  provider: provider,
-  providerSessionId: thread,
-  activity: activity,
-  attention: 'none',
-  result: 'none',
-  runtimeAttachment: 'loaded',
-  source: source,
-  confidence: 'authoritative',
-  observedAt: observedAt,
-  executionHost: executionHost,
-  activeTurnId: activity == 'working' ? turn : null,
-  controlState: activity == 'working' ? 'steerable' : 'writable',
-  authorityGeneration: authority,
-);
+  String? runtime = _runtime,
+}) => ConversationSyncV2Status.fromJson({
+  ...ConversationSyncV2Status(
+    provider: provider,
+    providerSessionId: thread,
+    activity: activity,
+    attention: 'none',
+    result: 'none',
+    runtimeAttachment: 'loaded',
+    source: source,
+    confidence: 'authoritative',
+    observedAt: observedAt,
+    executionHost: executionHost,
+    activeTurnId: activity == 'working' ? turn : null,
+    controlState: activity == 'working' ? 'steerable' : 'writable',
+    authorityGeneration: authority,
+  ).toJson(),
+  if (runtime != null) 'runtimeSessionId': runtime,
+});
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
@@ -503,6 +507,100 @@ void main() {
       });
     },
   );
+
+  for (final cachedBeforeIdle in [false, true]) {
+    test(
+      'unobserved intermediate runtime cannot retire new output with cache ${cachedBeforeIdle ? 'before' : 'after'} socket idle',
+      () async {
+        final cubit = createCubit();
+        cubit.updateDetachedLiveRuntime('runtime-intermediate');
+        cubit.updateDetachedLiveRuntime('runtime-current');
+        // No visual existed at either rebind: the original pending-turn
+        // validator cannot be responsible for the cleanup being tested.
+        expect(
+          cubit.diagnosticRuntimeProjection['visualTurnValidationPending'],
+          isFalse,
+        );
+        if (cachedBeforeIdle) {
+          cubit.updateDetachedProviderStatus(
+            _status(
+              authority: 'authority-intermediate',
+              runtime: 'runtime-intermediate',
+              observedAt: '2026-10-02T11:00:01.500Z',
+            ),
+            sourceFingerprint: _source,
+          );
+        }
+        bridge.emitMessage(
+          const StreamDeltaMessage(text: 'Current runtime output'),
+          sessionId: 'runtime-current',
+        );
+        bridge.emitMessage(
+          const StatusMessage(status: ProcessStatus.idle),
+          sessionId: 'runtime-current',
+        );
+        await pumpEventQueue();
+        cubit.updateDetachedProviderStatus(
+          _status(
+            activity: 'idle',
+            authority: 'authority-intermediate',
+            runtime: 'runtime-intermediate',
+            observedAt: '2026-10-02T11:00:02.000Z',
+          ),
+          sourceFingerprint: _source,
+        );
+        expect(streaming.state.isStreaming, isTrue);
+        expect(streaming.state.text, 'Current runtime output');
+
+        // A later snapshot naming the actual bound runtime still completes
+        // through the same socket/status path, without recreating the Cubit.
+        cubit.updateDetachedProviderStatus(
+          _status(
+            authority: 'authority-current',
+            runtime: 'runtime-current',
+            observedAt: '2026-10-02T11:00:03.000Z',
+          ),
+          sourceFingerprint: _source,
+        );
+        bridge.emitMessage(
+          const StatusMessage(status: ProcessStatus.idle),
+          sessionId: 'runtime-current',
+        );
+        await pumpEventQueue();
+        cubit.updateDetachedProviderStatus(
+          _status(
+            activity: 'idle',
+            authority: 'authority-current',
+            runtime: 'runtime-current',
+            observedAt: '2026-10-02T11:00:04.000Z',
+          ),
+          sourceFingerprint: _source,
+        );
+        expect(streaming.state.isStreaming, isFalse);
+        expect(streaming.state.text, isEmpty);
+      },
+    );
+  }
+
+  test('legacy status cannot acquire the new terminal cleanup path', () async {
+    final cubit = createCubit();
+    await streamFinal();
+    bridge.emitMessage(
+      const StatusMessage(status: ProcessStatus.idle),
+      sessionId: _runtime,
+    );
+    await pumpEventQueue();
+    cubit.updateDetachedProviderStatus(
+      _status(
+        activity: 'idle',
+        runtime: null,
+        observedAt: '2026-10-02T11:00:02.000Z',
+      ),
+      sourceFingerprint: _source,
+    );
+    expect(streaming.state.isStreaming, isTrue);
+    expect(streaming.state.text, 'Final answer');
+  });
 
   test(
     'rejected attachment authority cannot clear a preserved visual turn',

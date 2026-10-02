@@ -991,6 +991,9 @@ describe("conversation_sync_v2 protocol", () => {
             status.authorityGeneration === "runtime-authority-7",
         );
       expect(authoritativeStatus).toBeDefined();
+      expect(authoritativeStatus).toMatchObject({
+        runtimeSessionId: runtimeSession.id,
+      });
       const authoritativeStatusFrame = events(
         fixture.sent,
         client,

@@ -5,14 +5,14 @@
 - 时间：2026-10-03（Asia/Shanghai；此前条目保留当时记录）。
 - 分支：`codex/sync-chain-extraction-20261001`。
 - 起始 SHA：`930f1267e949c6cf2095761cc71c43cca08c6dc3`。
-- 阶段：A0–A3 / B1、B2、C1a 与 C1b 选定接缝已完成源码门禁；C1c 终态候选的全量出现 1 FAIL，继续原接点的契约修复，暂不迁移 runtime queue。
+- 阶段：A0–A3 / B1、B2、C1a 与 C1b 选定接缝已完成源码门禁；C1c 89084bcb 全量已绿，但独立复核的 runtime 身份缺口已由 public red 证明，先修边界，暂不迁移 runtime queue。
 - 最新完整门禁产品 SHA：`ce51e28027087e5fe4d4d79533390203ae3735a8`，canonical 与焦点行为分开提交。
 - 最新固定测试/fixture 输入：`adf337ea5f2ddddf3639da4e37b020435033b1d1`，全部门禁启动时 clean。
 - 最新全量 Mobile 3333 PASS / 4 SKIPPED（--concurrency=1），Bridge 2546 PASS / 1 SKIPPED；build/typecheck/格式通过。
 - analyze 0 error/warning，1017 既有 info 完整文本逐项无新增；产品/fixture 固定 SHA 独立复核无剩余可证明 P0–P2。
 - R35 pending focus 缺陷已确定性旧 Service red → 窄修 → 相同原页面 green，关闭选定交错；旧两次 FAIL 与恢复收据保留。
 - C1c `095cab00` clean 全量 3344 PASS / 4 SKIPPED / 1 FAIL，不是可验收候选；新 R40 两项 red 和诊断见 E049。
-- 已接受门禁证据见 E041；当前调查、提交索引与回退见 E043–E049。
+- 已接受门禁证据见 E041；当前调查、提交索引与回退见 E043–E052。
 - E024 的历史并发折叠等待 FAIL 尚未归属；当前同四文件默认并发 50 PASS，不能据此关闭旧失败或宣称设备/运行链验收。
 - 真实 Provider、模拟器/真机、生产 Bridge、云 CI、OTA/发布 NOT_RUN；原生 UI 自动化工具缺失为 BLOCKED。
 - 最新提交与验证身份在后续条目登记；不能从本节推断部署状态。
@@ -1295,3 +1295,36 @@ terminal-before-completion / 原 fold / release 后均 streaming=false、interme
 canonical ID/顺序/hash 和四行内容与 E043 red 相同。没有 refresh、重建或改期限来取得通过。
 095cab00 全量 FAIL 的直接路径与历史 R29 仍不作因果关闭；分项通过不是完整验收。
 接着冻结这版 SHA，完整 Mobile/analyze/format 与固定 SHA 独立复核；队列入口先写职责与未覆盖契约。
+
+## E052 — 全量通过后仍以独立复核补 runtime 归属契约
+
+E051 产品与输入固定 `89084bcbf71b64b90c9af30a1c2848b4a536281e`，检查开始 clean、期间没有编辑。
+`c1c-authority-final-full-mobile`：3350 PASS / 4 SKIPPED，exit0，341.244 秒。
+`c1c-authority-final-full-analyze`：exit0，16.814 秒，0 error/warning、1017既有info；
+完整诊断文本及重复计数逐项同E041，`c1c-authority-final-analysis-comparison.json`新增/消除均空。
+`c1c-authority-final-format`：四文件0 changed，0.577 秒。
+`c1c-authority-final-input-identity.json`证明 Bridge/deps/两个原receiver未变，继承E041 Bridge门禁。
+
+固定SHA只读GPT-6 Luna/max复核没有P0/P1，指出一项新增清流的P2：
+A→B→C连续重绑，B的authority未曾被Cubit观察，旧rejected槽只记A；
+同source B缓存随后被重读，并被原接点标成C的local generation。
+若重绑时无visual，因此validationPending=false，C新正文/socket idle后B的idle可误清C流。
+Root核对status模型无runtimeSessionId，updater/catalog没有可排除此顺序的runtime身份事实。
+这不是旧mutation接纳机制的新引入，也不能倒因果解释095cab00全量或历史R29。
+
+先补public输入，不改产品：B缓存在C socket idle前/后两种交错，以及旧Bridge缺字段的反向保护；
+后续C匹配状态通过原路径终态的正向断言保留。使用wire JSON输入，未知字段在旧模型被忽略，
+故red不是因新增成员无法编译。Bridge现有formal-overlay用例新增真实runtime身份断言；
+Dart protocol新增持久JSON round trip和旧版/长度/类型约束。
+
+| 收据 | 真实结果 | 退出码 / 时长 |
+|---|---|---|
+| c1c-runtime-status-identity-unit-red | 原16 PASS / 新3行为FAIL | 1 / 2.935秒 |
+| c1c-runtime-status-identity-bridge-red | 命令目录错误，未找到根node_modules/vitest；不是行为证据 | 1 / 0.123秒 |
+| c1c-runtime-status-identity-bridge-red-corrected | producer缺runtimeSessionId，1行为FAIL / 185按筛选跳过 | 1 / 1.009秒 |
+| c1c-runtime-status-identity-protocol-red | 18 PASS / JSON身份丢失1行为FAIL | 1 / 1.794秒 |
+
+所以89084bcb测试门禁PASS但复核不予验收；不能因全量绿灯直接搬队列。
+方案与兼容/回退关系见RUNTIME-STATUS-IDENTITY.md。新增可选身份由Bridge已有bridgeSessionId提供，
+Cubit的新清理核对当前bound runtime；旧Bridge保留原阅读/completion/validation。
+这批改变Bridge源码后必须重新build及验Bridge完整门禁，不再继承E041。
