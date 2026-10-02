@@ -2,16 +2,16 @@
 
 ## 当前断点
 
-- 时间：2026-10-02（Asia/Taipei）。
+- 时间：2026-10-02（Asia/Shanghai；此前条目保留当时记录）。
 - 分支：`codex/sync-chain-extraction-20261001`。
 - 起始 SHA：`930f1267e949c6cf2095761cc71c43cca08c6dc3`。
 - 阶段：A0–A3 / B1、B2 与 C1a 已完成；C1b canonical admission 源码门禁完成，R35 完成信号仍在定位。
-- C1b 当前产品冻结 SHA：`2f64e383cc42776385ec22420d7ec299792bb9c9`，全量启动时 clean。
+- 上个完整门禁产品 SHA：`2f64e383cc42776385ec22420d7ec299792bb9c9`，全量启动时 clean；当前焦点修复另见 E039。
 - 最新固定测试/fixture 输入：`d0f164e54fd3c076c3940f21a75e05f1e2a00792`，门禁启动时 clean。
 - 最新全量 Mobile 3315 PASS / 4 SKIPPED（--concurrency=1），Bridge 2546 PASS / 1 SKIPPED；build/typecheck/格式通过。
 - analyze 0 error/warning，1017 既有 info 完整文本逐项无新增；该产品固定 SHA 复审无剩余可证明 P0–P2。
 - 此前产品全量与观测组合两次 R35 FAIL 未关闭，最新 PASS 不表示该问题已修复。
-- 当前证据与回退见 E034–E038；pending focus 缺口已有可控 red，下一步修原 Service 接点并重放原页面。
+- 当前证据与回退见 E034–E039；pending focus 窄修 green，原页面固定交错首次 PASS，仍须用旧 Service 确认同输入 red 并完成新门禁。
 - E024 的历史并发折叠等待 FAIL 尚未归属；最终串行 PASS 不证明默认并发或设备/运行链验收。
 - 最新提交与验证身份在后续条目登记；不能从本节推断部署状态。
 
@@ -915,3 +915,30 @@ root 新测试有 FFI options 与 diagnosticSnapshot 两处签名误用，未形
 失败沿原 transport loss 清理，不能确认失败 transport 或让旧订阅消费新意图。
 先独立行为 green 与相关 Service/页面回归，再固定新 SHA 全量检查和独立 review。
 本 red checkpoint 不作为运行候选；不继续 runtime 队列结构抽取。
+
+## E039 — 仅在当前订阅接受时补发最新焦点
+
+父 red checkpoint：`b95f735205da0ad8571b3db710a67c8a14baf4e1`。
+产品只改原 Service：实际发送 V1/V2 subscribe 时保存焦点快照，绑定 generation/request/target/
+Bridge/source 与协议类型；匹配接受后、第一次 await 之前，比较当前焦点并仅在不同时补发。
+使用原 V1 content-focus / V2 sync-focus 分支和原 transport loss 出口，不放宽 Bridge 授权或更换 writer。
+clear/切换/返回首帧焦点均按最新意图；snapshot 在接受、stop/transport loss、发送/读取错误、
+V1 subscribe error 处退休，不由旧接受消费。补发失败不继续 notify/SQL bootstrap/ACK。
+原 active focus 的去重、mark-read、自动修复仍走既有 owning path。
+
+原十六项均转绿：`c1b-green-pending-subscription-focus`，16 PASS，exit 0，3.513 秒。
+再保护 send-error 后可重新订阅且携带当前焦点、V1 无 pending request 的 late subscribed 被忽略；
+不对 nullable event request 作无条件断言。当前新文件共十七项。
+`c1b-pending-focus-related`：七文件 157 PASS，exit 0，23.795 秒；
+`c1b-pending-focus-target-analyze`：0 error/warning、两条既有 use_null_aware_elements info，21.159 秒。
+root 盘点全部 pending ID 清理接点，补 V1 error 的快照清理；
+`c1b-pending-focus-error-cleanup`：原 Service 与新文件 91 PASS，exit 0，6.358 秒。
+
+尚未提交的 fixture/原页面扩展提供首个 syncBegin 的 FIFO 闸门及实际 client subscribe/focus 查询。
+首次固定页面交错 `c1b-fixed-pending-focus-page-first`：1 PASS，exit 0，14.810 秒。
+实际 subscribe 无焦点，确认帧尚未送达时原页面已设置焦点；释放后只发送一个匹配 focus，
+原 A/B/最终消息可见性、fold、重读、离开返回、离线/重连及乱序/丢帧保护全部通过。
+这份收据是 fixed 产品加未提交 fixture 输入，不能作 clean 最终门禁。
+下一步保存恢复点，仅换回旧 Service 用同一 fixture/页面/断言形成确定性 red，然后恢复修复，
+再提交 fixture、固定新 SHA 全量检查与独立复核。观测不代替行为因果证明。
+本提交只保存 Service/十七项测试与过程，不顺带提交尚待 red 敏感性验证的 fixture。

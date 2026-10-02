@@ -265,6 +265,16 @@ class ConversationContentSyncService with WidgetsBindingObserver {
 
   ConversationContentTarget? _focused;
   String? _pendingSubscriptionId;
+  ({
+    int generation,
+    String requestId,
+    String targetFingerprint,
+    String? bridgeInstanceId,
+    String? codexSourceId,
+    bool syncV2,
+    ConversationContentTarget? focused,
+  })?
+  _pendingSubscriptionFocusAtSend;
   String? _activeSubscriptionId;
   String? _activeSubscriptionRequestId;
   String? _subscriptionTargetFingerprint;
@@ -533,7 +543,18 @@ class ConversationContentSyncService with WidgetsBindingObserver {
       }
       return;
     }
-    if (!_canProcessContent) return;
+    _sendFocusedConversation(subscriptionId, next);
+  }
+
+  bool _sendFocusedConversation(
+    String subscriptionId,
+    ConversationContentTarget? next,
+  ) {
+    if (_disposed ||
+        !_canProcessContent ||
+        subscriptionId != _activeSubscriptionId) {
+      return false;
+    }
     try {
       final requestId = _nextRequestId('focus');
       bridge.send(
@@ -560,9 +581,50 @@ class ConversationContentSyncService with WidgetsBindingObserver {
           )) {
         _scheduleAutomaticLatestTurnRepairFromCache(next);
       }
+      return true;
     } catch (_) {
       _handleTransportLoss();
+      return false;
     }
+  }
+
+  ConversationContentTarget? _rememberSubscriptionFocusAtSend(
+    int generation,
+    String requestId,
+    SessionCatalogCacheTarget target,
+  ) {
+    final focused = _focused;
+    _pendingSubscriptionFocusAtSend = (
+      generation: generation,
+      requestId: requestId,
+      targetFingerprint: target.fingerprint,
+      bridgeInstanceId: bridge.bridgeInstanceId,
+      codexSourceId: bridge.codexSourceId,
+      syncV2: bridge.supportsConversationSyncV2,
+      focused: focused,
+    );
+    return focused;
+  }
+
+  bool _reconcileSubscriptionFocus(String requestId, String subscriptionId) {
+    final sent = _pendingSubscriptionFocusAtSend;
+    if (sent == null || sent.requestId != requestId) return true;
+    _pendingSubscriptionFocusAtSend = null;
+    if (sent.generation != _generation ||
+        sent.targetFingerprint != _cacheTarget.fingerprint ||
+        sent.bridgeInstanceId != bridge.bridgeInstanceId ||
+        sent.codexSourceId != bridge.codexSourceId ||
+        sent.syncV2 != bridge.supportsConversationSyncV2 ||
+        subscriptionId != _activeSubscriptionId ||
+        _disposed ||
+        !_canProcessContent) {
+      _handleTransportLoss();
+      return false;
+    }
+    // Changes before send are already in subscribe. Only catch up changes
+    // between that wire snapshot and this matching acceptance, including null.
+    return _sameTarget(sent.focused, _focused) ||
+        _sendFocusedConversation(subscriptionId, _focused);
   }
 
   /// Every route or manual-refresh focus change retires the same old owner.
@@ -2106,6 +2168,7 @@ class ConversationContentSyncService with WidgetsBindingObserver {
     _failTimelineReadyWaiters(const _ConversationPagingInterrupted());
     _generation += 1;
     _pendingSubscriptionId = null;
+    _pendingSubscriptionFocusAtSend = null;
     _activeSubscriptionId = null;
     _activeSubscriptionRequestId = null;
     _subscriptionTargetFingerprint = null;
@@ -2199,16 +2262,22 @@ class ConversationContentSyncService with WidgetsBindingObserver {
                 return;
               }
               try {
+                final focused = _rememberSubscriptionFocusAtSend(
+                  generation,
+                  requestId,
+                  target,
+                );
                 bridge.send(
                   conversationContentSubscribe(
                     requestId: requestId,
                     knownRevisions: knownRevisions,
-                    focused: _focused,
+                    focused: focused,
                   ),
                 );
               } catch (_) {
                 if (generation == _generation) {
                   _pendingSubscriptionId = null;
+                  _pendingSubscriptionFocusAtSend = null;
                   _scheduleRetry();
                 }
               }
@@ -2216,6 +2285,7 @@ class ConversationContentSyncService with WidgetsBindingObserver {
             .catchError((Object _) {
               if (generation == _generation) {
                 _pendingSubscriptionId = null;
+                _pendingSubscriptionFocusAtSend = null;
                 _scheduleRetry();
               }
             }),
@@ -2255,6 +2325,11 @@ class ConversationContentSyncService with WidgetsBindingObserver {
           ? Set<String>.of(_forcedSnapshotThreadKeys)
           : const <String>{};
       final supportsWindowCoverage = bridge.supportsConversationWindowCoverage;
+      final focused = _rememberSubscriptionFocusAtSend(
+        generation,
+        requestId,
+        target,
+      );
       bridge.send(
         conversationSyncV2Subscribe(
           requestId: requestId,
@@ -2279,11 +2354,11 @@ class ConversationContentSyncService with WidgetsBindingObserver {
               )
               .toList(growable: false),
           readWatermarks: watermarks,
-          focused: _focused == null
+          focused: focused == null
               ? null
               : ConversationSyncV2Target(
-                  provider: _focused!.provider,
-                  providerSessionId: _focused!.providerSessionId,
+                  provider: focused.provider,
+                  providerSessionId: focused.providerSessionId,
                 ),
         ),
       );
@@ -2301,6 +2376,7 @@ class ConversationContentSyncService with WidgetsBindingObserver {
       );
       if (generation == _generation) {
         _pendingSubscriptionId = null;
+        _pendingSubscriptionFocusAtSend = null;
         _scheduleRetry();
       }
     }
@@ -2317,9 +2393,18 @@ class ConversationContentSyncService with WidgetsBindingObserver {
     }
     switch (event.event) {
       case ConversationContentEventKind.subscribed:
-        if (event.requestId != _pendingSubscriptionId) return;
+        final pendingRequestId = _pendingSubscriptionId;
+        if (pendingRequestId == null || event.requestId != pendingRequestId) {
+          return;
+        }
         _activeSubscriptionId = event.subscriptionId;
         _pendingSubscriptionId = null;
+        if (!_reconcileSubscriptionFocus(
+          pendingRequestId,
+          event.subscriptionId,
+        )) {
+          return;
+        }
         _notifySubscriptionReady();
       case ConversationContentEventKind.focusApplied:
       case ConversationContentEventKind.unsubscribed:
@@ -2656,6 +2741,12 @@ class ConversationContentSyncService with WidgetsBindingObserver {
           _activeSubscriptionId = event.subscriptionId;
           _activeSubscriptionRequestId = pendingRequestId;
           _pendingSubscriptionId = null;
+          if (!_reconcileSubscriptionFocus(
+            pendingRequestId,
+            event.subscriptionId,
+          )) {
+            return;
+          }
           await cache.beginConversationSync(
             target: target,
             subscriptionId: event.subscriptionId,
@@ -3890,6 +3981,7 @@ class ConversationContentSyncService with WidgetsBindingObserver {
   void _handleError(ConversationContentEventMessage event) {
     if (event.requestId == _pendingSubscriptionId) {
       _pendingSubscriptionId = null;
+      _pendingSubscriptionFocusAtSend = null;
       _scheduleRetry();
     }
   }
@@ -3924,6 +4016,7 @@ class ConversationContentSyncService with WidgetsBindingObserver {
     _generation += 1;
     _activeSubscriptionId = null;
     _pendingSubscriptionId = null;
+    _pendingSubscriptionFocusAtSend = null;
     _activeSubscriptionRequestId = null;
     _subscriptionTargetFingerprint = null;
     _subscriptionBridgeInstanceId = null;

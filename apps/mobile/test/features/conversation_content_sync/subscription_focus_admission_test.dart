@@ -230,9 +230,51 @@ void main() {
         expect(diagnostics['activeSubscriptionId'], isNull);
         expect(diagnostics['pendingSubscriptionId'], isNull);
         expect(focusFrames(), isEmpty);
-        if (v2)
+        if (v2) {
           expect(gateway.sentTypes, isNot(contains('conversation_sync_ack')));
+        }
+
+        gateway.throwOnClientType = null;
+        expect(service.retryBootstrap(), isTrue);
+        final replacement = await gateway.nextOutgoing(subscribeType);
+        expect(replacement['focused'], target('thread-a'));
+        await accept(replacement['requestId']! as String);
+        expect(
+          service.diagnosticSnapshot(
+            provider: 'codex',
+            providerSessionId: 'thread-a',
+          )['activeSubscriptionId'],
+          replacement['requestId'],
+        );
+        expect(focusFrames(), isEmpty);
       });
+
+      if (!v2) {
+        test('late subscribed without a pending request is ignored', () async {
+          final subscribe = await start();
+          final id = subscribe['requestId']! as String;
+          await accept(id);
+
+          gateway.addEvent(
+            ConversationContentEventMessage(
+              event: ConversationContentEventKind.subscribed,
+              subscriptionId: id,
+              bridgeInstanceId: 'bridge-1',
+              hotConversationLimit: 10,
+            ),
+          );
+          await pumpEventQueue();
+
+          expect(focusFrames(), isEmpty);
+          expect(
+            service.diagnosticSnapshot(
+              provider: 'codex',
+              providerSessionId: 'thread-a',
+            )['activeSubscriptionId'],
+            id,
+          );
+        });
+      }
 
       if (v2) {
         test(
