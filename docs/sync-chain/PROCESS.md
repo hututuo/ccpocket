@@ -1167,3 +1167,26 @@ E044 不作验收候选；下一步在原状态接点限定已确认 turn，并�
 Bridge source/fixture、Service/SQLite/reader/layout、本批 dependency 与 deadline 均未改变。
 接着冻结新 SHA 运行受影响 Mobile 全量、完整诊断文本比对、格式与独立最终复核；
 E045 的完整 FAIL 与两项 red 保留，不把分项 PASS 冒充完整验收。
+
+## E047 — 不把旧 active turn 当作新 raw delta 的归属
+
+E046 冻结产品 `29da56707a01f15497fae31c8c0eb07ac396f3ff`。
+独立 reviewer 提出上一轮 idle 经 SQL 延迟期间下一轮 raw delta 先到的候选；root 核对实际 wire，
+StreamDelta/ThinkingDelta 没有 turn ID，Mobile 解码亦仅保留 text，旧 activeTurnId 无法证明当前 transient 属于它。
+不修改 Bridge 协议，也不把旧 ID 直接包装成新的“归属模块”。
+
+补 public 入站序列：T1 working/完成、原 socket idle、随后 running/新 delta、再接纳延迟的 T1 idle；
+下次 T2 working/socket idle/committed idle 则应正常结束。另用 fake clock 固定 50ms 合并发布窗口，
+新 delta 已进入 pending 但尚未呈现时，旧终态也不能丢它。
+现有两项单 turn 正向契约补原 socket idle 接点，与真实页面的入站链一致；断言未减弱。
+
+- `c1c-terminal-next-delta-red`：9 PASS / 1 行为 FAIL，exit 1，3.150 秒。
+- `c1c-terminal-buffered-next-delta-red`：9 PASS / 2 行为 FAIL，exit 1，2.367 秒；非编译或 fake-clock 失败。
+
+这是受控 public 双 lane 行为证据，尚不是两个真实 Provider turn 的设备/Bridge 回放。
+计划窄修：StreamingStateCubit 独占增量接受 revision，append 时即推进（包括 pending thinking/text），
+reset 使旧标记失效；原 Cubit 只在 socket idle 接点记录有界 terminal visual ticket，
+含 runtime generation/source/stream revision。较晚 committed idle 仍须原 authority/time/provider/turn fence，
+只有 ticket 未被后续增量/重绑/source/reset 改变才取得新增清流资格。
+ticket 是防止过期清理的证据，不取得任何 canonical、控制或订阅权；无 ticket/无 turn 保持原完成/validate。
+行为修改与新输入分开提交；随后固定源跑全量与独立 review，继续保留历史 R29 未知。

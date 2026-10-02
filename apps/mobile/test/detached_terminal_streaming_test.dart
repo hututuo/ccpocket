@@ -4,6 +4,7 @@ import 'package:ccpocket/features/chat_session/state/chat_session_cubit.dart';
 import 'package:ccpocket/features/chat_session/state/streaming_state_cubit.dart';
 import 'package:ccpocket/features/chat_session/widgets/chat_process_layout.dart';
 import 'package:ccpocket/models/messages.dart';
+import 'package:fake_async/fake_async.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
@@ -37,6 +38,7 @@ ConversationSyncV2Status _status({
   String provider = 'codex',
   String thread = _thread,
   String authority = _authority,
+  String turn = _turn,
 }) => ConversationSyncV2Status(
   provider: provider,
   providerSessionId: thread,
@@ -48,7 +50,7 @@ ConversationSyncV2Status _status({
   confidence: 'authoritative',
   observedAt: observedAt,
   executionHost: 'bridge',
-  activeTurnId: activity == 'working' ? _turn : null,
+  activeTurnId: activity == 'working' ? turn : null,
   controlState: activity == 'working' ? 'steerable' : 'writable',
   authorityGeneration: authority,
 );
@@ -141,6 +143,11 @@ void main() {
         if (canonicalFirst) {
           cubit.updateDetachedPreviewHistory(history(finalReply: true));
         }
+        bridge.emitMessage(
+          const StatusMessage(status: ProcessStatus.idle),
+          sessionId: _runtime,
+        );
+        await pumpEventQueue();
         cubit.updateDetachedProviderStatus(
           _status(activity: 'idle', observedAt: '2026-10-02T11:00:02.000Z'),
           sourceFingerprint: _source,
@@ -311,6 +318,124 @@ void main() {
       },
     );
   }
+
+  test(
+    'next delta survives a delayed previous-turn terminal projection',
+    () async {
+      final cubit = createCubit();
+      await streamFinal();
+      cubit.updateDetachedPreviewHistory(history(finalReply: true));
+      overlays.add(
+        ConversationSyncV2EventMessage(
+          event: ConversationSyncV2EventKind.runtimeOverlay,
+          subscriptionId: 'subscription-terminal',
+          bridgeInstanceId: 'bridge-a',
+          codexSourceId: 'source-a',
+          batchId: 'batch-terminal',
+          sequence: 10,
+          provider: 'codex',
+          providerSessionId: _thread,
+          overlayId: 'previous-turn-completed',
+          observedAt: '2026-10-02T11:00:01.500Z',
+          originGeneration: 'runtime:$_runtime:$_authority',
+          runtimeSessionId: _runtime,
+          authorityGeneration: _authority,
+          turnId: _turn,
+          overlayMessage: _assistant(
+            'assistant-terminal-final',
+            'Final answer',
+          ),
+        ),
+      );
+      await pumpEventQueue();
+      expect(streaming.state.isStreaming, isFalse);
+      bridge.emitMessage(
+        const StatusMessage(status: ProcessStatus.idle),
+        sessionId: _runtime,
+      );
+      bridge.emitMessage(
+        const StatusMessage(status: ProcessStatus.running),
+        sessionId: _runtime,
+      );
+      bridge.emitMessage(
+        const StreamDeltaMessage(text: 'Next turn output'),
+        sessionId: _runtime,
+      );
+      await pumpEventQueue();
+      cubit.updateDetachedProviderStatus(
+        _status(activity: 'idle', observedAt: '2026-10-02T11:00:02.000Z'),
+        sourceFingerprint: _source,
+      );
+      expect(streaming.state.isStreaming, isTrue);
+      expect(streaming.state.text, 'Next turn output');
+      cubit.updateDetachedProviderStatus(
+        _status(turn: 'turn-next', observedAt: '2026-10-02T11:00:03.000Z'),
+        sourceFingerprint: _source,
+      );
+      bridge.emitMessage(
+        const StatusMessage(status: ProcessStatus.idle),
+        sessionId: _runtime,
+      );
+      await pumpEventQueue();
+      cubit.updateDetachedProviderStatus(
+        _status(activity: 'idle', observedAt: '2026-10-02T11:00:04.000Z'),
+        sourceFingerprint: _source,
+      );
+      expect(streaming.state.isStreaming, isFalse);
+      expect(streaming.state.text, isEmpty);
+    },
+  );
+
+  test(
+    'coalesced delta after socket idle survives delayed terminal projection',
+    () async {
+      await streaming.close();
+      streaming = StreamingStateCubit(
+        coalesceInterval: const Duration(milliseconds: 50),
+      );
+      fakeAsync((clock) {
+        final cubit = createCubit();
+        bridge.emitMessage(
+          const StreamDeltaMessage(text: 'Visible output'),
+          sessionId: _runtime,
+        );
+        clock.flushMicrotasks();
+        bridge.emitMessage(
+          const StatusMessage(status: ProcessStatus.idle),
+          sessionId: _runtime,
+        );
+        clock.flushMicrotasks();
+        bridge.emitMessage(
+          const StreamDeltaMessage(text: ' buffered next output'),
+          sessionId: _runtime,
+        );
+        clock.flushMicrotasks();
+        expect(streaming.state.text, 'Visible output');
+        cubit.updateDetachedProviderStatus(
+          _status(activity: 'idle', observedAt: '2026-10-02T11:00:02.000Z'),
+          sourceFingerprint: _source,
+        );
+        expect(streaming.state.isStreaming, isTrue);
+        clock.elapse(const Duration(milliseconds: 50));
+        expect(streaming.state.text, 'Visible output buffered next output');
+        cubit.updateDetachedProviderStatus(
+          _status(turn: 'turn-next', observedAt: '2026-10-02T11:00:03.000Z'),
+          sourceFingerprint: _source,
+        );
+        bridge.emitMessage(
+          const StatusMessage(status: ProcessStatus.idle),
+          sessionId: _runtime,
+        );
+        clock.flushMicrotasks();
+        cubit.updateDetachedProviderStatus(
+          _status(activity: 'idle', observedAt: '2026-10-02T11:00:04.000Z'),
+          sourceFingerprint: _source,
+        );
+        expect(streaming.state.isStreaming, isFalse);
+        expect(streaming.state.text, isEmpty);
+      });
+    },
+  );
 
   test(
     'rejected attachment authority cannot clear a preserved visual turn',
