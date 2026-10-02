@@ -2408,6 +2408,7 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
       );
       if (nextStatus == ProcessStatus.idle &&
           status.source == 'bridgeRuntime' &&
+          status.confidence == 'authoritative' &&
           executionHost == 'bridge' &&
           status.runtimeAttachment == 'loaded' &&
           status.runtimeSessionId?.trim().isNotEmpty == true &&

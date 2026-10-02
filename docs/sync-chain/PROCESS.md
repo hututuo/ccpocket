@@ -1409,5 +1409,13 @@ confidence明确降为unknown。因此即使runtime身份相符，也不能让�
 
 `c1c-terminal-confidence-red`：20 PASS / 1行为FAIL，2.849秒。
 进一步使controlState=unavailable，与实际producer的未知状态组合一致；
-`c1c-terminal-confidence-unavailable-red`仍20 PASS / 1行为FAIL，原收据保留。
+`c1c-terminal-confidence-unavailable-red`仍20 PASS / 1行为FAIL，1.816秒；原收据保留。
 产品尚未修改。窄修只给C1c新增分支加入confidence=authoritative，不重写原status呈现或控制lease。
+
+## E057 — 新清理只接受已证明的终态
+
+red checkpoint `ad94066c5176c9ebfec6081e55debf59d403f785`。
+仅在C1c新增terminal分支要求confidence=authoritative。Bridge未知/reconciling/blocked/unavailable
+仍通过原status呈现/visual validation，不获得这条新增清流资格。其他身份/ticket/revision条件不变。
+`c1c-terminal-confidence-green`：二十一项terminal与十三项queue共34 PASS，退出0，2.526秒。
+接着只做已保护quarantine map/bytes的结构迁移；不把未知控制lease或visual overflow包装成正确策略。
