@@ -1143,3 +1143,27 @@ root 与独立 GPT-6 Luna/max 均确认另一个 P2：未入 SQL 的 runtime ass
 `c1c-terminal-boundaries-unit-red`：7 PASS / 2 行为 FAIL，exit 1，3.372 秒，产品仍为 E044。
 E044 不作验收候选；下一步在原状态接点限定已确认 turn，并先过滤 runtime overlay 后 reset visual。
 缺少 turn ID 的路径维持原验证/完成逻辑，不凭 ordinary state.status 推断 committed V2 活跃证据。
+
+## E046 — 收紧已确认 turn 的终态与先 filter 后 reset
+
+父 red `82f0426c1723e1ce42eb60efa3c47571b1b633ae`。
+唯一产品文件仍为原 Cubit；没有增加另一份 last-active 状态。
+当前 status 通过原所有 fence 后，先按 runtime generation/authority/turn 过滤 overlay，
+在 assistant alias 还完整时完成分类；随后仅 idle 且此前已确认 activeTurnId 时退休 visual。
+其他情况继续原 `_validateDetachedVisualTurn`，包括重绑/source 待验证、缺 turn ID 与 legacy。
+`state.status` 也能由 ordinary lane 更新，因此不能用它代替 committed V2 turn 证据。
+这不是对所有无 ID 终态作新保证；它们保持既有完成消息/验证行为，仍需单独定义未来契约。
+
+固定父输入、仅上述 Cubit diff：
+
+| 收据 | 实际结果 | 退出码 / 时长 |
+|---|---|---|
+| c1c-terminal-boundaries-unit-green | 九项 public 契约 PASS；bootstrap 与未入库 completion 两个 red 转绿，其余旧时间/身份/同 turn 连续输出保留 | 0 / 3.164 秒 |
+| c1c-terminal-boundaries-blackbox-green | 原三文件七用例 PASS，含之前失败的 receiver、三个 complete 页面、partial-summary 与 older-pages | 0 / 32.780 秒 |
+
+原 receiver 源码未改，A/B/final、SQLite 重开、runtime 退休与实际 updater 的断言全部恢复通过；
+完整页面三个交错的所有原 fold/count/展开/故障恢复/真实 RPC 断言保留。
+新终态场景在 final consumer 尚 held 时已 idle/streaming=false/fold2，release 同一 event 后仍成立。
+Bridge source/fixture、Service/SQLite/reader/layout、本批 dependency 与 deadline 均未改变。
+接着冻结新 SHA 运行受影响 Mobile 全量、完整诊断文本比对、格式与独立最终复核；
+E045 的完整 FAIL 与两项 red 保留，不把分项 PASS 冒充完整验收。

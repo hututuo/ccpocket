@@ -2368,10 +2368,19 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
     final activeTurnId = status.activeTurnId?.trim();
     final hasActiveTurnId = activeTurnId?.isNotEmpty == true;
     if (!replaysRejectedAuthority) {
-      if (nextStatus == ProcessStatus.idle) {
+      // Filter runtime rows while their assistant aliases still identify them
+      // as overlays; visual reset below clears those aliases.
+      _reconcileDetachedRuntimeOverlayForStatus(
+        active: active,
+        activeTurnId: hasActiveTurnId ? activeTurnId : null,
+        authorityGeneration: authorityGeneration,
+      );
+      if (nextStatus == ProcessStatus.idle &&
+          _detachedActiveTurnId?.trim().isNotEmpty == true) {
         // Status and item completion travel through separate observers. A
-        // current idle projection must retire transient output even when the
-        // last completion is delayed or this binding was already validated.
+        // terminal projection retires a previously confirmed active turn.
+        // Bootstrap idle can lag new socket deltas before turn confirmation;
+        // it does not establish that their current turn has completed.
         _clearDetachedVisualTimeline();
       } else {
         _validateDetachedVisualTurn(
@@ -2380,11 +2389,6 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
           activeTurnId: activeTurnId,
         );
       }
-      _reconcileDetachedRuntimeOverlayForStatus(
-        active: active,
-        activeTurnId: hasActiveTurnId ? activeTurnId : null,
-        authorityGeneration: authorityGeneration,
-      );
     }
     _detachedActiveTurnId = replaysRejectedAuthority || !hasActiveTurnId
         ? null
