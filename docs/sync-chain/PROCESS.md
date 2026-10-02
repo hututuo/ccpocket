@@ -1092,3 +1092,25 @@ transient=true、intermediate indices=[1,2,3]，渲染 Current progress / Live /
 旧 FAIL 与当前 PASS 均是 final assistant→result→普通 idle，final overlay 分别在普通 idle 后约 83ms/3.7ms 提交；
 两者的 authority/turn 语义相同，没有丢帧证据。时间差不能直接归因；本 gate 固定合法交错，
 没有制造消息/权威/焦点或旁路原 Service fence。
+
+## E044 — 当前终态只在原 Cubit 退休 transient
+
+red checkpoint：`4dfa2e0558db5e61bc226e16e338c54fa7b17998`。
+唯一产品改动为 `ChatSessionCubit.updateDetachedProviderStatus` 的原终态接受接点：
+在 provider/thread、合法时间/旧时间/重复签名与 rejected attachment authority 检查后，
+仅 nextStatus=idle 调用已有 `_clearDetachedVisualTimeline`；其余状态继续原 visual turn 验证。
+没有根据 ordinary idle 旁路 committed V2 status，也未扩大 SQL/canonical/控制权。
+原 cleanup 清理 StreamingStateCubit、transient entry、desktop continuity 与 pending visual 状态，
+保留 durable canonical；原 overlay authority/turn 清理与晚到旧帧拒绝继续运行。
+
+固定 red checkpoint、仅上述产品 diff：
+`c1c-terminal-status-unit-green`，7 PASS，exit 0，3.344 秒；
+`c1c-terminal-status-page-green`，原页面受控 completion 场景 1 PASS，exit 0，13.496 秒。
+内部 15 秒、完整页面外层 120 秒与原 final/count/展开/恢复断言均未改。
+受控 terminal-before-completion 快照 idle / streaming=false、intermediate=[1,2]、final index=3；
+release 同一真实 final event 后仍保持上述折叠，canonical 四行无重复。
+随后 edit、展开、离开返回、离线、重开/重连、旧订阅、乱序/丢帧和原 RPC 检查均 PASS。
+`c1c-terminal-status-initial-comparison.json` 对照 red/green 的 canonical 稳定 ID/顺序/hash 与 Cubit 行相同。
+
+此处只证明 R37 窄窗口；当前全量/独立复核/同冻结输入旧 Cubit 敏感性尚待下一条登记。
+历史 R29 仍没有失败瞬间布局事实，不随本修复关闭；运行链/设备/生产状态不变。

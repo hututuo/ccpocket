@@ -2368,11 +2368,18 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
     final activeTurnId = status.activeTurnId?.trim();
     final hasActiveTurnId = activeTurnId?.isNotEmpty == true;
     if (!replaysRejectedAuthority) {
-      _validateDetachedVisualTurn(
-        active: active,
-        result: status.result,
-        activeTurnId: activeTurnId,
-      );
+      if (nextStatus == ProcessStatus.idle) {
+        // Status and item completion travel through separate observers. A
+        // current idle projection must retire transient output even when the
+        // last completion is delayed or this binding was already validated.
+        _clearDetachedVisualTimeline();
+      } else {
+        _validateDetachedVisualTurn(
+          active: active,
+          result: status.result,
+          activeTurnId: activeTurnId,
+        );
+      }
       _reconcileDetachedRuntimeOverlayForStatus(
         active: active,
         activeTurnId: hasActiveTurnId ? activeTurnId : null,
