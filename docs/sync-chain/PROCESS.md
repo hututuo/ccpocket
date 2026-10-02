@@ -5,7 +5,7 @@
 - 时间：2026-10-02（Asia/Shanghai；此前条目保留当时记录）。
 - 分支：`codex/sync-chain-extraction-20261001`。
 - 起始 SHA：`930f1267e949c6cf2095761cc71c43cca08c6dc3`。
-- 阶段：A0–A3 / B1、B2、C1a 与 C1b 选定接缝已完成源码门禁；下一批先定位 R29，再评估 runtime 抽取。
+- 阶段：A0–A3 / B1、B2、C1a 与 C1b 选定接缝已完成源码门禁；C1c 在原终态入口建立 R37 red，暂不抽取 runtime queue。
 - 最新完整门禁产品 SHA：`ce51e28027087e5fe4d4d79533390203ae3735a8`，canonical 与焦点行为分开提交。
 - 最新固定测试/fixture 输入：`adf337ea5f2ddddf3639da4e37b020435033b1d1`，全部门禁启动时 clean。
 - 最新全量 Mobile 3333 PASS / 4 SKIPPED（--concurrency=1），Bridge 2546 PASS / 1 SKIPPED；build/typecheck/格式通过。
@@ -1051,3 +1051,44 @@ root 没改源码或断言，在 clean adf337ea 用原四个文件名组合、�
 停止扩大条件见 [R29-FOLD-ENTRY](R29-FOLD-ENTRY.md)。
 先记录原接收路径是否接受完成/idle 与 turn identity、stream 状态和布局计数，再形成确定性 red；
 在正确结果或取消归属尚不明确时不迁移 runtime queue。
+
+## E043 — C1c 收尾状态交错的范围与 red 契约
+
+起点 clean `aa1b185d71e5e94da89c4242edf53372d5be56de`。
+按 R29 入口核对原 owning path：layout 的 active 同时读取 process status、external turn 与 isStreaming。
+正常 current runtime 的 `_detachedVisualTurnValidationPending` 为 false；接受当前 idle 时只更新状态，
+stream 清理只存在于绑定/source 待验证分支，可能留下使布局持续 active 的 transient。
+这是待行为验证的明确接点，不宣称旧 E024 根因已经确定。
+
+允许改动：新 `detached_terminal_streaming_test.dart`、原 full-page 的受控 consumer 交错与诊断；
+若 red 证实，仅原 Cubit 的 current terminal 接受/已有 visual 清理接点及对应文档。
+Bridge 协议/产品、Service fence/SQL writer、C1a reader、layout 算法与原断言/期限保留。
+不迁移 runtime pending queue，也不以终态身份不明的消息取得清理权。
+
+public Cubit 正向契约：当前来源的较新 idle 应退休旧流式输出；合法 canonical final 在 idle 前/后到达，
+均呈现 A/B 两个 intermediate、final 在外，晚到旧完成不重新取得权威或复制 canonical。
+保护 working/partial、旧时间、其他 provider/thread、旧 attachment authority 与同 turn 重绑继续输出。
+随后在原页面只延迟实际 Service 最终 runtime_overlay 的 consumer delivery，保留 FIFO 与原 frame，
+让真实状态/SQL 路径先到；原 final/fold 与所有恢复断言仍须通过。
+红灯、行为修复、敏感性恢复、固定 SHA 门禁与独立复核逐项记录；旧 R29 未有最终 UI 证据仍保留未知。
+
+实际 red（产品未改，HEAD aa1b185d + 明确测试/文档 diff）：
+
+| 收据 | 结果 | 退出码 / 时长 |
+|---|---|---|
+| c1c-terminal-status-unit-red | 七项 public Cubit 契约：5 PASS / 2 行为 FAIL，分别为 canonical 在当前 idle 前/后到达；非编译失败 | 1 / 3.285 秒 |
+| c1c-terminal-status-page-red | 新受控原页面用例在原 final-outside-collapsed-process 断言 FAIL：missing complete intermediate fold | 1 / 24.350 秒 |
+
+真实页面 trace：`c1c-terminal-status-page-red-traces/2026-10-02T11-41-44.803Z-ae66d373-live-segments/`。
+held 的原最终完成帧 sequence 69 已由 Service 接受；gate 只延迟 consumer，不阻塞 SQL/status。
+terminal-before-completion 和失败快照均为 chatStatus idle、external=false、activeTurnId=null、
+visualTurnValidationPending=false，而 streaming=true / text=Final answer。
+SQL 与 Cubit 同为四行 user/A/B/final、稳定 ID/顺序/hash 正确；页面 disclosure active=true、
+transient=true、intermediate indices=[1,2,3]，渲染 Current progress / Live / 3 updates。
+因此这个受控窗口的故障归属到原 Cubit 接受终态后未退休 transient；不改 layout 取得 green。
+原始 receipt/log/trace 以及 `c1c-terminal-status-red-evidence.json` 均独立保存，历史 E024 仍未因果关闭。
+
+只读 GPT-6 Luna/max 复核 Bridge→Service：ordinary status 路径可先于经过异步 FIFO/SQL 的 V2 overlay。
+旧 FAIL 与当前 PASS 均是 final assistant→result→普通 idle，final overlay 分别在普通 idle 后约 83ms/3.7ms 提交；
+两者的 authority/turn 语义相同，没有丢帧证据。时间差不能直接归因；本 gate 固定合法交错，
+没有制造消息/权威/焦点或旁路原 Service fence。

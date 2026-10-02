@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'package:ccpocket/features/chat_session/state/chat_session_cubit.dart';
+import 'package:ccpocket/features/chat_session/state/streaming_state_cubit.dart';
 import 'package:ccpocket/features/chat_session/widgets/chat_intermediate_process_group.dart';
 import 'package:ccpocket/features/chat_session/widgets/chat_process_disclosure.dart';
 import 'package:ccpocket/features/chat_session/widgets/durable_session_preview.dart';
@@ -28,6 +29,64 @@ import '../chat_screen/helpers/page_platform_services.dart';
 import 'harness_ready.dart';
 
 class _PageHttpOverrides extends HttpOverrides {}
+
+/// Holds one already-accepted Service event at the presentation consumer.
+/// Wire order, Service fences, SQLite commits and status reads stay original.
+class _FinalCompletionGate {
+  _FinalCompletionGate(this.threadId);
+
+  final String threadId;
+  final _release = Completer<void>();
+  ConversationSyncV2EventMessage? held;
+  bool returned = false;
+
+  Future<ConversationSyncV2EventMessage> delay(
+    ConversationSyncV2EventMessage event,
+  ) async {
+    final message = event.overlayMessage;
+    if (held == null &&
+        !_release.isCompleted &&
+        event.providerSessionId == threadId &&
+        message is AssistantServerMessage &&
+        message.message.id == 'assistant-live-final') {
+      held = event;
+      await _release.future;
+      returned = true;
+    }
+    return event;
+  }
+
+  void release() {
+    if (!_release.isCompleted) _release.complete();
+  }
+
+  Map<String, Object?> snapshot() => {
+    'held': held != null,
+    'returned': returned,
+    'sequence': held?.sequence,
+    'subscriptionId': held?.subscriptionId,
+    'originGeneration': held?.originGeneration,
+    'runtimeSessionId': held?.runtimeSessionId,
+    'authorityGeneration': held?.authorityGeneration,
+    'turnId': held?.turnId,
+    'observedAt': held?.observedAt,
+  };
+}
+
+class _DelayedFinalCompletionSync extends ConversationContentSyncService {
+  _DelayedFinalCompletionSync({
+    required super.bridge,
+    required super.cache,
+    required this.gate,
+  });
+
+  final _FinalCompletionGate gate;
+  Stream<ConversationSyncV2EventMessage>? _presentationOverlays;
+
+  @override
+  Stream<ConversationSyncV2EventMessage> get runtimeOverlays =>
+      _presentationOverlays ??= super.runtimeOverlays.asyncMap(gate.delay);
+}
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
@@ -394,11 +453,22 @@ void main() {
     );
   }
 
-  for (final holdInitialSyncBegin in [false, true]) {
+  for (final scenario in [
+    'ordinary',
+    'pending-focus',
+    'delayed-final-completion',
+  ]) {
+    final holdInitialSyncBegin = scenario == 'pending-focus';
+    final holdFinalCompletion = scenario == 'delayed-final-completion';
     testWidgets(
-      holdInitialSyncBegin
-          ? 'complete Codex page catches up focus changed during pending subscribe'
-          : 'complete Codex page refreshes from real RPC commits and survives wire faults',
+      switch (scenario) {
+        'pending-focus' =>
+          'complete Codex page catches up focus changed during pending subscribe',
+        'delayed-final-completion' =>
+          'complete Codex page retires streaming before delayed final completion',
+        _ =>
+          'complete Codex page refreshes from real RPC commits and survives wire faults',
+      },
       (tester) async {
         await tester.binding.setSurfaceSize(const Size(430, 1400));
         addTearDown(() => tester.binding.setSurfaceSize(null));
@@ -458,10 +528,20 @@ void main() {
             final bridge = BridgeService(
               clientAppVersion: 'full-page-chain-test',
             );
-            final sync = ConversationContentSyncService(
-              bridge: BridgeServiceConversationContentSyncGateway(bridge),
-              cache: repository,
-            )..start(initialLifecycleState: AppLifecycleState.resumed);
+            final completionGate = holdFinalCompletion
+                ? _FinalCompletionGate(threadId)
+                : null;
+            final sync = completionGate == null
+                ? ConversationContentSyncService(
+                    bridge: BridgeServiceConversationContentSyncGateway(bridge),
+                    cache: repository,
+                  )
+                : _DelayedFinalCompletionSync(
+                    bridge: BridgeServiceConversationContentSyncGateway(bridge),
+                    cache: repository,
+                    gate: completionGate,
+                  );
+            sync.start(initialLifecycleState: AppLifecycleState.resumed);
             final sessionList = SessionListCubit(
               bridge: bridge,
               catalogCache: repository,
@@ -697,11 +777,21 @@ void main() {
 
             Map<String, Object?> presentationSnapshot() {
               final chat = mountedChat;
+              final streaming = BlocProvider.of<StreamingStateCubit>(
+                tester.element(find.byKey(const ValueKey('message_input'))),
+              ).state;
               return {
                 'chatStatus': chat?.state.status.name,
                 'externalDesktopTurnActive':
                     chat?.state.externalDesktopTurnActive,
                 'runtimeProjection': chat?.diagnosticRuntimeProjection,
+                'streaming': {
+                  'isStreaming': streaming.isStreaming,
+                  'text': streaming.text,
+                  'thinking': streaming.thinking,
+                },
+                if (completionGate != null)
+                  'completionGate': completionGate.snapshot(),
                 'rows': chatRows(),
                 'renderedText': tester
                     .widgetList<RichText>(find.byType(RichText))
@@ -871,8 +961,39 @@ void main() {
                 });
               }
               stage = 'final-outside-collapsed-process';
+              if (completionGate != null) {
+                await eventually(
+                  () =>
+                      completionGate.held != null &&
+                      mountedChat!.state.status == ProcessStatus.idle &&
+                      mountedChat!
+                              .diagnosticRuntimeProjection['activeTurnId'] ==
+                          null,
+                  'the actual terminal status must arrive before held completion',
+                );
+                trace.add({
+                  'stage': 'terminal-before-completion',
+                  'result': 'HELD',
+                  ...presentationSnapshot(),
+                  'sync': diagnostics(),
+                });
+              }
               await collapsedFinal('Final answer');
               pass(window);
+              if (completionGate != null) {
+                completionGate.release();
+                await eventually(
+                  () => completionGate.returned,
+                  'held completion must return unchanged to the original consumer',
+                );
+                await collapsedFinal('Final answer');
+                trace.add({
+                  'stage': 'late-final-completion',
+                  'result': 'PASS',
+                  ...presentationSnapshot(),
+                  'sync': diagnostics(),
+                });
+              }
               final beforeEdit = await barrier();
               final checkpoint = await control('wire_checkpoint', {
                 'name': 'page-before-edit',
@@ -1113,6 +1234,7 @@ void main() {
               });
               rethrow;
             } finally {
+              completionGate?.release();
               await tester.pumpWidget(const SizedBox.shrink());
               await sessionList.close();
               await sync.dispose();
