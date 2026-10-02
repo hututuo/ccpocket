@@ -1,6 +1,6 @@
 # V2 detached canonical 候选的准备与接受
 
-范围为 C1b，起点/红灯/行为修复见 PROCESS E030–E032；当前为结构设计，最终门禁另记。
+范围为 C1b，起点/红灯/行为修复见 PROCESS E030–E032，结构实现见 E033，最终门禁另记。
 
 | 责任 | 唯一归属 |
 |---|---|
@@ -16,11 +16,14 @@ generation 或 writer。它不持有 Page/Cubit/Service/Repository；别名与�
 
 ## 完整接点与契约
 
-1. 原 History handler 解码后，用当前 non-past entries 筛选既有 outgoing/runtime overlays，
-   调用现有 reducer 一次，生成不可变候选；准备阶段没有 draft/alias、paging 或 state 写入。
+1. 原 History handler 解码后，复用原 reducer 的 canonical 身份扫描，生成不可变 candidate。
+   canonical 列表与 alias 索引在本次调用中只准备一次；该阶段不筛选/应用 runtime overlay，
+   也没有 draft/alias、paging 或 state 写入。
 2. public updateDetachedPreviewHistory 在 paging/状态应用之前判定 candidate；
    duplicate canonical 拒绝整个候选，保留 last-good 设置、审批、队列、分页与未证实的 outgoing 状态。
-3. 合法候选沿原 _applyUpdate → V2 merge 接缝传入；本次同步应用复用同一个投影。
+3. 合法候选沿原 _applyUpdate → V2 merge 接缝传入；原入口先执行既有 runtime 归属/过滤，
+   再筛选当前 outgoing/runtime overlays，用 candidate 的 canonical 列表/索引完成原 overlay 合成。
+   每次 compose 复制工作列表/索引，不改变 candidate 或另一份结果；不提前捕获可能被原入口过滤的 overlay。
    其他已有 merge 调用者在原分支就地准备候选，保持原兼容范围。
 4. draft/本地 outgoing ID 只消费候选中的原 canonical client 证据；assistant alias 只消费原 canonical entries。
    rejected candidate 不提供 receipt 消费计划；正常合法 commit 与重放仍按原稳定身份合并。

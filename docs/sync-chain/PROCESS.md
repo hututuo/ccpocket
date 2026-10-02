@@ -747,3 +747,27 @@ legacy empty 仍更新原分页观察并保留 last-good；没有变更 wire、S
 存在临时的两次纯投影计算。下一步在同一既有模块中准备不可变候选，原路径只应用同一结果，
 完整迁移 acceptance 接点，避免另造 reducer/状态总线。设计见 DETACHED-CANONICAL-ADMISSION。
 完整黑盒、全量 Mobile analyze/tests 与固定 SHA 独立复审仍待最终结构实现后执行。
+
+## E033 — 同一 canonical 候选的 prepare / admission / compose
+
+行为父提交：`b22c8a8cad39af376578be246d9bac58ba2cf4bd`。
+结构只改原 `detached_timeline_projection.dart` 与 Cubit 接缝：
+原 canonical alias 扫描抽为 `prepareDetachedCanonicalHistory`，不可变 candidate 保存原 canonical
+输入、canonical 工作基线/索引、duplicate 判定及仅来源于原输入的 client receipt 证据。
+现有 `projectDetachedTimeline` API 仍由相同 canonical pass + 原 overlay pass 组成，不增加 reducer。
+
+public durable history 在应用前 admission；合法 candidate 经 _applyUpdate 原 V2 merge 传入。
+runtime 归属/过滤仍先由原 owning path 执行，再 compose 当前 overlays；没有提前缓存旧 overlay。
+每次 compose 使用工作副本，原 candidate 与其他投影结果不被修改。draft/aliases 只在接受后消费，
+不把 overlay enrichment 后获得的 client ID 当作 canonical receipt。
+其他 merge 调用者的就地准备、legacy empty、shared weaving、SQLite/wire 和 source authority 未移走。
+
+`c1b-prepared-admission-related`：351 PASS，exit 0，32.976 秒；含六个原 Cubit、新四个纯 candidate、
+原 Cubit/local-history paging/十三个 SQL 页面/durable/投影/layout；本次未重复跑四个黑盒，最终全量会覆盖。
+`c1b-prepared-target-analyze`：0 error/warning，但 18 info 中有八条新 private constructor 样式提示（四条各重复一次）；
+没有把它们当既有 info。改为 private positional initializing formals，语义/输入/断言不变，
+相关 `c1b-candidate-constructor-style-related` 十一个用例 PASS；最终全量诊断继续逐项比对基线。
+只读 inventory worker 未完成初始化，没有调查产出；root 完成上述原入口盘点和实施，未等待它代替 root 判断。
+
+本结构 checkpoint 等待固定 SHA 独立复审与最终全量 Mobile 门禁；尚不计作 C1b 最终完成。
+回退结构须保留 E032 的整体 admission 和四个红灯保护；candidate 接口的后续依赖按逆序处理。

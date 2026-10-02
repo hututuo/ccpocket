@@ -29,6 +29,45 @@ class DetachedTimelineProjectionResult {
   final int duplicateOverlayCount;
 }
 
+/// Prepared canonical input for one synchronous history application.
+///
+/// Admission and receipt evidence come from canonical input, before any
+/// current-runtime or local outgoing overlay enriches the presentation.
+class DetachedCanonicalHistoryCandidate {
+  const DetachedCanonicalHistoryCandidate._(
+    this._canonical,
+    this._canonicalAliasIndexes,
+    this._exactAliases,
+    this._mergeEquivalent, {
+    required this.canonicalEntries,
+    required this.duplicateCanonicalCount,
+    required this.acknowledgedClientMessageIds,
+  });
+
+  final List<ChatEntry> canonicalEntries;
+  final List<ChatEntry> _canonical;
+  final Map<String, int> _canonicalAliasIndexes;
+  final DetachedTimelineEntryAliases _exactAliases;
+  final DetachedTimelineEntryMerger _mergeEquivalent;
+  final int duplicateCanonicalCount;
+  final List<String> acknowledgedClientMessageIds;
+
+  bool get isAccepted => duplicateCanonicalCount == 0;
+
+  DetachedTimelineProjectionResult compose({
+    required List<ChatEntry> outgoingOverlays,
+    required List<ChatEntry> runtimeOverlays,
+  }) => _projectDetachedTimelineOverlays(
+    canonical: List<ChatEntry>.of(_canonical),
+    canonicalAliasIndexes: Map<String, int>.of(_canonicalAliasIndexes),
+    duplicateCanonicalCount: duplicateCanonicalCount,
+    outgoingOverlays: outgoingOverlays,
+    runtimeOverlays: runtimeOverlays,
+    exactAliases: _exactAliases,
+    mergeEquivalent: _mergeEquivalent,
+  );
+}
+
 /// Pure, O(n) projection for detached conversation_sync_v2 timelines.
 ///
 /// Expected inputs are already committed canonical rows plus bounded local
@@ -40,12 +79,24 @@ DetachedTimelineProjectionResult projectDetachedTimeline({
   required List<ChatEntry> runtimeOverlays,
   required DetachedTimelineEntryAliases exactAliases,
   required DetachedTimelineEntryMerger mergeEquivalent,
+}) => prepareDetachedCanonicalHistory(
+  canonicalEntries: canonicalEntries,
+  exactAliases: exactAliases,
+  mergeEquivalent: mergeEquivalent,
+).compose(outgoingOverlays: outgoingOverlays, runtimeOverlays: runtimeOverlays);
+
+/// Runs the original canonical identity pass without applying any overlays.
+DetachedCanonicalHistoryCandidate prepareDetachedCanonicalHistory({
+  required List<ChatEntry> canonicalEntries,
+  required DetachedTimelineEntryAliases exactAliases,
+  required DetachedTimelineEntryMerger mergeEquivalent,
 }) {
+  final originalCanonical = List<ChatEntry>.unmodifiable(canonicalEntries);
   final canonical = <ChatEntry>[];
   final canonicalAliasIndexes = <String, int>{};
   var duplicateCanonicalCount = 0;
 
-  for (final entry in canonicalEntries) {
+  for (final entry in originalCanonical) {
     final aliases = exactAliases(entry).toSet();
     int? existingIndex;
     for (final alias in aliases) {
@@ -70,6 +121,32 @@ DetachedTimelineProjectionResult projectDetachedTimeline({
     }
   }
 
+  return DetachedCanonicalHistoryCandidate._(
+    List<ChatEntry>.unmodifiable(canonical),
+    Map<String, int>.unmodifiable(canonicalAliasIndexes),
+    exactAliases,
+    mergeEquivalent,
+    canonicalEntries: originalCanonical,
+    duplicateCanonicalCount: duplicateCanonicalCount,
+    acknowledgedClientMessageIds: duplicateCanonicalCount > 0
+        ? const []
+        : List<String>.unmodifiable([
+            for (final entry in originalCanonical.whereType<UserChatEntry>())
+              if (entry.clientMessageId?.trim().isNotEmpty == true)
+                entry.clientMessageId!,
+          ]),
+  );
+}
+
+DetachedTimelineProjectionResult _projectDetachedTimelineOverlays({
+  required List<ChatEntry> canonical,
+  required Map<String, int> canonicalAliasIndexes,
+  required int duplicateCanonicalCount,
+  required List<ChatEntry> outgoingOverlays,
+  required List<ChatEntry> runtimeOverlays,
+  required DetachedTimelineEntryAliases exactAliases,
+  required DetachedTimelineEntryMerger mergeEquivalent,
+}) {
   final appended = <ChatEntry>[];
   final appendedAliases = <String>{};
   final seenOverlayAliases = <String>{};

@@ -2190,30 +2190,26 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
         isCodex: isCodex,
         ignoredToolUseIds: const {},
       );
+      DetachedCanonicalHistoryCandidate? canonicalCandidate;
       if (_bridge.supportsConversationSyncV2) {
-        final projection = projectDetachedTimeline(
+        canonicalCandidate = prepareDetachedCanonicalHistory(
           canonicalEntries: update.entriesToAdd
               .where((entry) => entry is! StreamingChatEntry)
               .toList(growable: false),
-          outgoingOverlays: const [],
-          runtimeOverlays: const [],
           exactAliases: _entryExactAliasKeys,
           mergeEquivalent: _mergeEquivalentEntry,
         );
-        if (projection.duplicateCanonicalCount > 0) {
-          _detachedProjectionDuplicateCanonicalCount =
-              projection.duplicateCanonicalCount;
-          _detachedProjectionLastAction = 'canonical_rejected_duplicate';
-          logger.warning(
-            '[timeline_projection] event=canonical_rejected_duplicate '
-            'thread=$_projectionThreadToken '
-            'count=${projection.duplicateCanonicalCount}',
-          );
+        if (!canonicalCandidate.isAccepted) {
+          _recordRejectedDetachedCanonicalHistory(canonicalCandidate);
           return;
         }
       }
       _updateDetachedHistoryPagingAvailability(hasEarlier);
-      _applyUpdate(update, history);
+      _applyUpdate(
+        update,
+        history,
+        detachedCanonicalCandidate: canonicalCandidate,
+      );
       if (state.status == ProcessStatus.starting) {
         emit(state.copyWith(status: ProcessStatus.idle));
       }
@@ -2233,6 +2229,18 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
       hasMore: hasEarlier,
       loading: false,
       clearError: true,
+    );
+  }
+
+  void _recordRejectedDetachedCanonicalHistory(
+    DetachedCanonicalHistoryCandidate candidate,
+  ) {
+    _detachedProjectionDuplicateCanonicalCount =
+        candidate.duplicateCanonicalCount;
+    _detachedProjectionLastAction = 'canonical_rejected_duplicate';
+    logger.warning(
+      '[timeline_projection] event=canonical_rejected_duplicate '
+      'thread=$_projectionThreadToken count=${candidate.duplicateCanonicalCount}',
     );
   }
 
@@ -5412,6 +5420,7 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
     bool affectVisibleStreaming = true,
     bool isLocalMirrorSnapshot = false,
     bool discardLocalMirrorEntries = false,
+    DetachedCanonicalHistoryCandidate? detachedCanonicalCandidate,
   }) {
     _recordOutgoingDraftEvidence(originalMsg);
     final messageHandler = sourceHandler ?? _handler;
@@ -5819,6 +5828,7 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
         final reconciledHistoryEntries = _mergeHistoryWithPreservedLiveEntries(
           existingNonPast: existingNonPast,
           historyEntries: mergedHistoryEntries,
+          canonicalCandidate: detachedCanonicalCandidate,
         );
 
         entries = [...pastEntries, ...reconciledHistoryEntries];
@@ -6452,6 +6462,7 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
   List<ChatEntry> _mergeHistoryWithPreservedLiveEntries({
     required List<ChatEntry> existingNonPast,
     required List<ChatEntry> historyEntries,
+    DetachedCanonicalHistoryCandidate? canonicalCandidate,
   }) {
     if (detachedPreview && _bridge.supportsConversationSyncV2) {
       final outgoingOverlays = existingNonPast
@@ -6462,12 +6473,16 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
       final runtimeOverlays = existingNonPast
           .where(_isDetachedRuntimeOverlayEntry)
           .toList(growable: false);
-      final projection = projectDetachedTimeline(
-        canonicalEntries: historyEntries,
+      final candidate =
+          canonicalCandidate ??
+          prepareDetachedCanonicalHistory(
+            canonicalEntries: historyEntries,
+            exactAliases: _entryExactAliasKeys,
+            mergeEquivalent: _mergeEquivalentEntry,
+          );
+      final projection = candidate.compose(
         outgoingOverlays: outgoingOverlays,
         runtimeOverlays: runtimeOverlays,
-        exactAliases: _entryExactAliasKeys,
-        mergeEquivalent: _mergeEquivalentEntry,
       );
       _detachedProjectionCanonicalCount = projection.canonicalCount;
       _detachedProjectionOutgoingOverlayCount = projection.outgoingOverlayCount;
@@ -6476,31 +6491,24 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
           projection.duplicateCanonicalCount;
       _detachedProjectionDuplicateOverlayCount =
           projection.duplicateOverlayCount;
-      if (projection.duplicateCanonicalCount > 0) {
-        _detachedProjectionLastAction = 'canonical_rejected_duplicate';
-        logger.warning(
-          '[timeline_projection] event=canonical_rejected_duplicate '
-          'thread=$_projectionThreadToken '
-          'count=${projection.duplicateCanonicalCount}',
-        );
+      if (!candidate.isAccepted) {
+        _recordRejectedDetachedCanonicalHistory(candidate);
         // A committed SQLite window should already have one row per stable
         // provider item. Do not replace the last valid projection with a
         // damaged snapshot merely because the reducer could collapse it.
         return existingNonPast;
       }
       _detachedProjectionLastAction = 'canonical_commit';
-      for (final entry in historyEntries.whereType<UserChatEntry>()) {
-        final clientMessageId = entry.clientMessageId?.trim();
-        if (clientMessageId?.isNotEmpty == true) {
-          _detachedLocalOverlayClientIds.remove(clientMessageId);
-          _logOutgoingReceipt(
-            'canonical_commit',
-            clientMessageId,
-            cleared: _clearOutgoingDraft(clientMessageId),
-          );
-        }
+      for (final canonicalClientId in candidate.acknowledgedClientMessageIds) {
+        final clientMessageId = canonicalClientId.trim();
+        _detachedLocalOverlayClientIds.remove(clientMessageId);
+        _logOutgoingReceipt(
+          'canonical_commit',
+          clientMessageId,
+          cleared: _clearOutgoingDraft(clientMessageId),
+        );
       }
-      _consumeDetachedCanonicalAssistantAliases(historyEntries);
+      _consumeDetachedCanonicalAssistantAliases(candidate.canonicalEntries);
       if (projection.duplicateOverlayCount > 0) {
         logger.warning(
           '[timeline_projection] event=duplicates_collapsed '
