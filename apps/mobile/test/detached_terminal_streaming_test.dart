@@ -37,8 +37,10 @@ ConversationSyncV2Status _status({
   String observedAt = '2026-10-02T11:00:01.000Z',
   String provider = 'codex',
   String thread = _thread,
-  String authority = _authority,
+  String? authority = _authority,
   String? turn = _turn,
+  String source = 'bridgeRuntime',
+  String? executionHost = 'bridge',
 }) => ConversationSyncV2Status(
   provider: provider,
   providerSessionId: thread,
@@ -46,10 +48,10 @@ ConversationSyncV2Status _status({
   attention: 'none',
   result: 'none',
   runtimeAttachment: 'loaded',
-  source: 'bridgeRuntime',
+  source: source,
   confidence: 'authoritative',
   observedAt: observedAt,
-  executionHost: 'bridge',
+  executionHost: executionHost,
   activeTurnId: activity == 'working' ? turn : null,
   controlState: activity == 'working' ? 'steerable' : 'writable',
   authorityGeneration: authority,
@@ -218,6 +220,33 @@ void main() {
         expectCompletedLayout(cubit);
       },
     );
+  }
+
+  for (final evidence in ['missing-authority', 'desktop-host', 'app-server']) {
+    test('socket idle does not grant cleanup for $evidence status', () async {
+      final cubit = createCubit();
+      await streamFinal();
+      cubit.updateDetachedPreviewHistory(history(finalReply: true));
+      bridge.emitMessage(
+        const StatusMessage(status: ProcessStatus.idle),
+        sessionId: _runtime,
+      );
+      await pumpEventQueue();
+      cubit.updateDetachedProviderStatus(
+        _status(
+          activity: 'idle',
+          observedAt: '2026-10-02T11:00:02.000Z',
+          authority: evidence == 'missing-authority' ? null : _authority,
+          executionHost: evidence == 'desktop-host'
+              ? 'desktopAppServer'
+              : 'bridge',
+          source: evidence == 'app-server' ? 'appServer' : 'bridgeRuntime',
+        ),
+        sourceFingerprint: _source,
+      );
+      expect(streaming.state.isStreaming, isTrue);
+      expect(streaming.state.text, 'Final answer');
+    });
   }
 
   test(

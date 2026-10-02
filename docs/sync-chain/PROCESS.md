@@ -1259,3 +1259,15 @@ turnless working 或暂缺 projection，再接受合法 bridgeRuntime idle。ord
 这是新确定性缺口，尚不把它冒充上次全量或历史 R29 的完整因果解释。
 下一步用当前 Bridge 权威 lease 与未变化 socket ticket 约束清流，替代仅依赖旧 activeTurnId；
 增加无权威/外部 host 的反向保护，先分项，再冻结源验原七黑盒与全量。
+
+## E050 — socket 顺序条件必须和当前 Bridge 权威同时成立
+
+E049 诊断与两项 red 输入冻结 `2bc616050e55dbcd3dcc9f5f77ce5f1ab372d621`。
+在原十一项和 turnless/暂缺两项之外，补三种反向输入：缺 authorityGeneration、desktopAppServer host、
+appServer evidence source。三者即使在 socket idle 后到达，也不能凭旧 activeTurnId 获得新的清流资格。
+`c1c-terminal-socket-authority-red`：11 PASS / 5 行为 FAIL，exit1，3.171 秒。
+此时产品仍是 095cab00 的行为，只有 E049 只读观测；五个失败均发生在 streaming 保留/退休断言。
+接下来限定 source=bridgeRuntime、host=bridge、loaded attachment、当前 source/binding 的 authority lease，
+再核对原 ticket/input revision。这样不靠已被暂缺/turnless 投影清掉的控制 turn ID，
+也不把普通 idle 顺序证据误当作 Provider 权威。原 source/time/provider/rejected-authority fence 不变。
+E049 用于追踪的高频流操作与暂缺日志将移除；保留只读 revision/ticket 快照和终态/quarantine 原接点事实。
