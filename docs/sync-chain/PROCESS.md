@@ -11,7 +11,7 @@
 - 最新全量 Mobile 3315 PASS / 4 SKIPPED（--concurrency=1），Bridge 2546 PASS / 1 SKIPPED；build/typecheck/格式通过。
 - analyze 0 error/warning，1017 既有 info 完整文本逐项无新增；该产品固定 SHA 复审无剩余可证明 P0–P2。
 - 此前产品全量与观测组合两次 R35 FAIL 未关闭，最新 PASS 不表示该问题已修复。
-- 当前证据与回退见 E034–E037；职责见 DETACHED-CANONICAL-ADMISSION，下一步按 RUNTIME-ITEM-BOUNDARY 证明 pending focus 竞态。
+- 当前证据与回退见 E034–E038；pending focus 缺口已有可控 red，下一步修原 Service 接点并重放原页面。
 - E024 的历史并发折叠等待 FAIL 尚未归属；最终串行 PASS 不证明默认并发或设备/运行链验收。
 - 最新提交与验证身份在后续条目登记；不能从本节推断部署状态。
 
@@ -886,3 +886,32 @@ subscribe 已发出、syncBegin 尚未接受时改变焦点，是否遗漏确认
 使当前产品/测试身份、已完成职责、保留失败、回退依赖与下一步一致。
 下一步先在原 Service/真实 SQL 测试建立可控焦点 red，再决定窄行为修复；暂不扩大 runtime 结构。
 真实 Provider/设备/生产 Bridge/云 CI/OTA/发布 NOT_RUN；原生 UI 自动化工具缺失为 BLOCKED。
+
+## E038 — 订阅发出后至接受前的焦点遗漏 red
+
+父文档 checkpoint：`5c438e5f05a8727e8a2a1db55e6134939d90689c`，产品仍与 2f64e383 相同。
+root 与独立只读调查分别核对原 Service：setFocusedConversation 更新本地焦点后，
+active subscription 为空时只尝试 ensureSubscribed；pending ID 阻止重复订阅。
+V2 syncBegin / V1 subscribed 接受后没有比较已发送 subscribe 的焦点与最新本地意图。
+所以发送之后、接受之前的变化被保留在本地，却没有任何 focus frame；发送之前的变化则会进首帧。
+Bridge 的 focusedKey 过滤仍是正确授权边界，不是待放宽对象。
+
+新增 `subscription_focus_admission_test.dart`，经原 Service、原 gateway 测试 helper 与真实 FFI SQLite。
+不注入私有订阅状态；通过 outgoing subscribe 与 incoming begin/subscribed 控制顺序。
+V1/V2 各覆盖最新焦点、清除、返回原焦点、普通 active 行为、旧订阅、dispose、补发错误；
+V2 另覆盖 source 拒绝与缓存读取前改变焦点。共十六项，原断言均有可观察 wire/订阅状态依据。
+
+`c1b-red-pending-subscription-focus`：0 PASS / 1 加载 FAIL，exit 1，4.637 秒；
+root 新测试有 FFI options 与 diagnosticSnapshot 两处签名误用，未形成行为 red，日志保留。
+修正签名，不改产品或测试预期。
+`c1b-red-pending-subscription-focus-signatures-corrected`：7 PASS / 9 行为 FAIL，exit 1，5.619 秒。
+最新焦点、清焦点、替换订阅的当前焦点、catch-up send error 在 V1/V2 均 FAIL；V2 正确 source 接受后补发也 FAIL。
+返回原焦点、既有 active/dedup、dispose、发送前变化均 PASS，明确缺口位于 send→accept 窗口。
+
+这证明原 owning path 的补发缺陷，且与两次 R35 wire 差异一致；原页面的确定性交错与修复后重放仍待完成。
+允许产品修改限 Service 的 subscribe 实际发送快照、接受时对齐、原 focus 发送及失效清理；
+协议模型、Bridge 授权、SQL writer、页面 reader/布局不变。V1 同 owner/同缺口一起窄修，保留旧消息类型。
+补发必须属于当前 generation/request/source/target，只发送最新意图（含 null），同首帧焦点不重复发；
+失败沿原 transport loss 清理，不能确认失败 transport 或让旧订阅消费新意图。
+先独立行为 green 与相关 Service/页面回归，再固定新 SHA 全量检查和独立 review。
+本 red checkpoint 不作为运行候选；不继续 runtime 队列结构抽取。

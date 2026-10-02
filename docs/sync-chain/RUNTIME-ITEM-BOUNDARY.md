@@ -1,7 +1,8 @@
 # Runtime 完成信号与可见过程消息
 
-状态：C1b 产品全量曾暴露 R35，定位中；观测输入 d0f164e5 全量 PASS 不是行为修复。
-最新证据见 PROCESS E036–E037。
+状态：C1b 产品全量曾暴露 R35；原 Service 的 pending focus 遗漏已用十六项测试证明（7 PASS / 9 FAIL），
+窄修复与原页面交错重放进行中。观测输入 d0f164e5 全量 PASS 不是行为修复。
+最新证据见 PROCESS E036–E038。
 
 V2 detached 中，canonical history 来自 Service → SQLite → 原页面/Cubit。
 实时 delta 留在 handler/StreamingStateCubit；assistant item 完成经带 source、runtime、
@@ -20,8 +21,18 @@ authority、turn 的 runtime_overlay 关闭流式累积，并按 exact identity 
 - 两次 FAIL 的初始 subscribe 没有 focused，之后没有 focus 请求；失败时客户端 diagnostic 却有目标焦点。
   两次全量 PASS 的初始 subscribe 都带目标 focused，并有 A/B runtime_overlay。
   Bridge `publishRuntimeOverlay` 只向 interactive、capability 支持且 focusedKey 匹配的订阅发送，
-  所以焦点缺失能够解释漏信号；pending subscribe 期间遗漏焦点仍须确定性 red 证明。
+  所以焦点缺失能够解释漏信号；E038 已确定性证明 pending subscribe 期间遗漏补发。
   对照另存 `c1b-runtime-overlay-focus-comparison.json`，不是凭成功重放关闭问题。
+
+## 已确定的 owning path 缺陷
+
+V2 subscribe 与 V1 content subscribe 均在实际发送时取一次 `_focused`。
+发送后，setFocusedConversation 在 active ID 尚空时只更新本地意图；pending ID 令 ensureSubscribed 返回。
+syncBegin/subscribed 接受时没有补发，因此本地 diagnostic 与 wire focus 可长期不一致。
+发送前变化、返回首帧焦点、普通 active/dedup 与 dispose 的正向保护通过；
+发送后的设置/清除/替换订阅/send-error 保护失败。范围与回退见 E038 / R36。
+修复只在匹配接受、首次 await 前核对实际发送快照与当前焦点；相同不发，不同使用原协议 focus。
+Bridge authority/focus fence 与 V2 durable writer 均保留，原页面交错重放仍须证明 R35 的可见结果。
 
 R35 与旧 R29 的“完整中间过程折叠等待”是不同失败阶段；没有证据证明两者同因。
 也没有证据将 R35 归因于 Git tip 修复、机器负载或测试随机性。
@@ -42,10 +53,10 @@ origin 快照能佐证输入，不能单独证明资格门通过。独立只读�
 
 ## 下一步与停止扩大范围的条件
 
-1. 保留当前失败与成功原始 trace；优先在原 Service 控制 subscribe 已发送、syncBegin 尚未接受的顺序，
-   在中间设置/切换/清除焦点，验证接受后实际发送的焦点与当前意图一致。
-   同时保护 source/generation/旧订阅/dispose，已携带同一焦点不产生重复请求。
-   若此竞态不能复现，再继续 sessionMessage 资格门、authority sequencing、队列容量和丢弃接点观测。
+1. 保留 E038 red 与此前成功/失败 trace；修复原 Service 的发送快照与接受后对齐，
+   保护 source/generation/旧订阅/dispose，已携带同一焦点不产生重复请求。
+   用隔离 fixture 的原协议帧闸门固定该交错，再经过原 SQL/Cubit/页面断言，不能手动注入页面状态。
+   若修复后仍漏完成信号，再继续 sessionMessage 资格门、authority sequencing、队列容量与丢弃接点观测。
 2. 用可控事实建立确定性 red：不能靠重跑变绿宣布修复，也不能放宽 source/authority fence、
    接受普通 runtime 正文、延长等待或删可见性断言。
 3. 定位真实 owner 后另记行为修复与 green；再固定 SHA 全量检查和独立复审。
