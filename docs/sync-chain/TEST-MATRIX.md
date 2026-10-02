@@ -39,7 +39,7 @@
 | R32 | candidate 输入、compose 与证据来源 | 准备输入冻结，compose 不修改；overlay enrich 不产生 canonical receipt | PASS 四项纯 candidate 保护；E033 |
 | R33 | rejected History Git tip | 未显示的 tip 不抑制下一条有效 error；已接受 tip 仍去重 | PASS 原 Cubit 1 red → green + 1 正向，handler 三路径保护；E034/E035 |
 | R34 | 原 handler / shared mirror / SQL reader 兼容 | 普通 History/live tip 保留，原分页/读取/布局契约通过 | PASS 分项收据 447 用例通过但一次命令有错文件加载 FAIL；正确分页文件另 15 PASS，不伪装单次总数；E035 |
-| R35 | 第二条 runtime commentary 的独立可见性 | canonical A/B 已提交时结束对应 transient，B 独立可读 | FAIL 两次历史运行未关闭；d0 全量 PASS 另记。FAIL 订阅无焦点但客户端有焦点，E038 已证明 Service 补发缺陷，原页面确定性交错与修复后重放待完成；见 RUNTIME-ITEM-BOUNDARY |
+| R35 | 第二条 runtime commentary 的独立可见性 | canonical A/B 已提交时结束对应 transient，B 独立可读 | PASS 确定性原页面交错：旧 Service 同症状 FAIL，修复仅补一条匹配 focus 后原 A/B/final/fold/恢复 PASS，hold/release字节顺序一致；恢复后六个黑盒 PASS；固定新SHA全量待验，旧两次FAIL保留；E040 |
 | R36 | subscribe 发送→接受之间设置/切换/清焦点 | 接受后只补发最新且当前的意图，同首帧不重复；旧源/订阅/dispose 无补发，失败 transport 清理 | PASS 窄修后十七项与相关157/91用例；原7 PASS / 9行为FAIL保留，覆盖V2/V1原消息及真实SQLite；新固定SHA全量待验；E038/E039 |
 
 R09/R10 的最上游是隔离 Provider fixture，使用真实 Bridge、协议、SQLite 和页面相关代码；

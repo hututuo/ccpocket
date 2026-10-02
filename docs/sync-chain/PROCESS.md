@@ -11,7 +11,7 @@
 - 最新全量 Mobile 3315 PASS / 4 SKIPPED（--concurrency=1），Bridge 2546 PASS / 1 SKIPPED；build/typecheck/格式通过。
 - analyze 0 error/warning，1017 既有 info 完整文本逐项无新增；该产品固定 SHA 复审无剩余可证明 P0–P2。
 - 此前产品全量与观测组合两次 R35 FAIL 未关闭，最新 PASS 不表示该问题已修复。
-- 当前证据与回退见 E034–E039；pending focus 窄修 green，原页面固定交错首次 PASS，仍须用旧 Service 确认同输入 red 并完成新门禁。
+- 当前证据与回退见 E034–E040；pending focus 缺陷与 R35 相同原页面症状已确定性 red → green，最终新输入门禁仍待完成。
 - E024 的历史并发折叠等待 FAIL 尚未归属；最终串行 PASS 不证明默认并发或设备/运行链验收。
 - 最新提交与验证身份在后续条目登记；不能从本节推断部署状态。
 
@@ -942,3 +942,36 @@ root 盘点全部 pending ID 清理接点，补 V1 error 的快照清理；
 下一步保存恢复点，仅换回旧 Service 用同一 fixture/页面/断言形成确定性 red，然后恢复修复，
 再提交 fixture、固定新 SHA 全量检查与独立复核。观测不代替行为因果证明。
 本提交只保存 Service/十七项测试与过程，不顺带提交尚待 red 敏感性验证的 fixture。
+
+## E040 — 相同原页面输入证明 R35 的行为因果
+
+修复产品提交：`ce51e28027087e5fe4d4d79533390203ae3735a8`。
+fixture-only 扩展在连接前启用首个 syncBegin 闸门，暂存其及同订阅后续 V2 原始帧，显式 FIFO 释放。
+队列上限 128；原普通 drop/reorder/replay 与 callback 行为保留。控制查询来自已捕获的 client raw frames，
+不造订阅、sequence、focus、authority、Provider 消息或页面状态。
+原 full-page 注册普通/held 两种输入；普通场景沿用全部原断言，新增场景仅固定前置交错并核对一条补发。
+原 15 秒可见性/内容/fold 断言不改；黑盒现在三个文件共六个用例。
+
+先记录修复输入 `c1b-fixed-pending-focus-page-first` 的 1 PASS（14.810 秒）。
+再将唯一产品文件 Service 换成 b95f7352 中的原内容，其他页面/fixture/Bridge 输入保留，
+`c1b-red-pending-focus-real-page`：0 PASS / 1 FAIL，exit 1，21.023 秒。
+FAIL 精确为原 assistant-live-segment-b 的 Second live commentary 独立可见性；
+SQL/Cubit 有正确 user/A/B，UI 仍 transient A+B，runtime overlay event count=0，客户端没有 focus frame。
+这与 E036 两次失败的症状及 wire 焦点差异一致，不再仅凭成功重放或静态推断归因。
+修复输入有且仅有一个匹配订阅的 focus；A/B/最终可见、fold 与后续全部原页面恢复保护 PASS。
+
+两个轨迹均 hold/release 七帧，subscription/sequence/sha256 列表逐项相同，确认按原字节/顺序释放。
+对照另存 `c1b-pending-focus-real-page-causal-comparison.json`。
+source swap 使用 commit 内容核对和独立备份，finally 已恢复与 ce51e280 完全一致的修复 Service；
+`c1b-pending-focus-real-page-service-swap.json` 记录两个 SHA256、backup、退出码与 restored=true。
+这是隔离 checkout 的敏感性验证，未部署/替换任何运行服务。
+恢复后的 `c1b-pending-focus-restored-blackbox`：三个文件六个用例 PASS，exit 0，24.768 秒。
+同一 GPT-6 Luna/max 对 b95..ce51 固定产品/十七项测试只读复核，无可证明 P0–P2；
+快照与 payload、首次 await 前补发、协议/fence/清理、原 active/refresh/readmark/repair 均成立。
+SQL 未开始的性质由早退顺序证明；新错误测试直接约束 transport 清理与无 ACK。
+
+新增控制/原页面场景与过程作为独立测试 checkpoint；随后固定 clean 新 SHA 执行
+Mobile/Bridge 全量、诊断比对、格式与观测 fixture 的独立 review。
+R35 在此选定窗口有确定性 red/green 因果，真实 Provider/设备与其他运行交错仍不借用该结论。
+旧 R29 的并发 complete-fold 等待仍未归属，不把它与 R35 合并关闭。
+回退 Service 行为保留十七项回归与 held-page red；回退 fixture 不能移除原五个黑盒/断言。

@@ -113,7 +113,9 @@ const providerMessages = [];
 const runtimeOverlayObservations = [];
 const bridgeFrames = [];
 const clientFrames = [];
-const wireFaults = new ConversationWireFaults((raw) => bridgeFrames.push(raw));
+const wireFaults = new ConversationWireFaults((raw) => bridgeFrames.push(raw), {
+  holdInitialSyncBegin: process.env.CCPOCKET_CHAIN_HOLD_INITIAL_SYNC_BEGIN === "1",
+});
 let activeRuntime = null;
 let notifyCatalogChanged = () => {};
 let catalogRevision = 0;
@@ -563,6 +565,22 @@ for await (const line of input) {
         break;
       case "wire_arm":
         result = wireFaults.arm(command.kind);
+        break;
+      case "wire_bootstrap_status": {
+        const requests = clientFrames.map((raw) => JSON.parse(raw));
+        result = {
+          ...wireFaults.bootstrapStatus(),
+          subscribeRequests: requests
+            .filter((frame) => frame.type === "conversation_sync_subscribe")
+            .map(({ requestId, focused }) => ({ requestId, focused: focused ?? null })),
+          focusRequests: requests
+            .filter((frame) => frame.type === "conversation_sync_focus")
+            .map(({ requestId, subscriptionId, focused }) => ({ requestId, subscriptionId, focused: focused ?? null })),
+        };
+        break;
+      }
+      case "wire_release_bootstrap":
+        result = wireFaults.releaseBootstrap();
         break;
       case "provider_status":
         result = {

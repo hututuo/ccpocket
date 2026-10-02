@@ -4,12 +4,15 @@ import { createHash } from "node:crypto";
 // Test-only wire faults around the real Bridge. Replays preserve every byte;
 // this fixture never fabricates revisions, subscription IDs or server events.
 export class ConversationWireFaults {
-  constructor(onFrame) {
+  constructor(onFrame, { holdInitialSyncBegin = false } = {}) {
     this.onFrame = onFrame;
     this.connections = [];
     this.checkpoints = new Map();
     this.trace = [];
     this.pendingFault = null;
+    this.bootstrapGate = holdInitialSyncBegin
+      ? { state: "armed", connection: null, subscriptionId: null, frames: [] }
+      : null;
   }
 
   attach(socket) {
@@ -42,6 +45,26 @@ export class ConversationWireFaults {
       if (frame.type === "conversation_sync_v2") {
         connection.frames.push({ raw, frame });
         if (connection.frames.length > 512) connection.frames.shift();
+        const gate = this.bootstrapGate;
+        if (gate?.state === "armed" && frame.event === "sync_begin") {
+          gate.state = "holding";
+          gate.connection = connection;
+          gate.subscriptionId = frame.subscriptionId;
+        }
+        if (
+          gate?.state === "holding" &&
+          gate.connection === connection &&
+          gate.subscriptionId === frame.subscriptionId
+        ) {
+          if (gate.frames.length >= 128) {
+            throw new Error("Initial sync gate exceeded its bounded frame queue");
+          }
+          gate.frames.push({ raw, frame });
+          this.record("hold-bootstrap", connection, frame, raw);
+          const callback = args.find((value) => typeof value === "function");
+          if (callback) queueMicrotask(() => callback());
+          return;
+        }
         const fault = this.pendingFault;
         if (fault?.connection === connection && frame.event !== "sync_begin") {
           if (fault.kind === "drop") {
@@ -78,6 +101,31 @@ export class ConversationWireFaults {
     const connection = this.connections.findLast((entry) => entry.socket.readyState === 1);
     if (!connection) throw new Error("No open fixture receiver socket");
     return connection;
+  }
+
+  bootstrapStatus() {
+    const gate = this.bootstrapGate;
+    return {
+      state: gate?.state ?? "disabled",
+      connection: gate?.connection?.id ?? null,
+      subscriptionId: gate?.subscriptionId ?? null,
+      heldSequences: gate?.frames.map(({ frame }) => frame.sequence) ?? [],
+    };
+  }
+
+  releaseBootstrap() {
+    const gate = this.bootstrapGate;
+    if (gate?.state !== "holding" || gate.connection.socket.readyState !== 1) {
+      throw new Error("Initial sync gate is not holding an open subscription");
+    }
+    const held = gate.frames;
+    gate.frames = [];
+    gate.state = "released";
+    for (const { raw, frame } of held) {
+      gate.connection.send(raw);
+      this.record("release-bootstrap", gate.connection, frame, raw);
+    }
+    return { ...this.bootstrapStatus(), releasedCount: held.length };
   }
 
   checkpoint(name, { subscriptionId, sequence }) {
