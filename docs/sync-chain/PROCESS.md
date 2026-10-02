@@ -1398,3 +1398,16 @@ red checkpoint `4b59aee7b6e9b31753a1846ff83514dd499c1816`。
 源/重绑/suspend/close、authority失效与visible trim保持原完整清理；两项future turn red转green。
 当前只关闭选定同authority的公开契约，future authority/真实两轮Provider仍没有被这些fixture证明。
 结构迁移另提交：RuntimeOverlayQuarantine独占map/bytes，原Cubit保留所有envelope/time/control/reconcile/apply。
+
+## E056 — 不把保留的未知 activity 当作新终态证据
+
+queue修复父输入 `c3fcab964ae94c99223b3a5aa7bb5c20a6940d7a`。
+Root核对statusFromRuntime：controlState为reconciling/blocked/unavailable时保留previous.activity，
+confidence明确降为unknown。因此即使runtime身份相符，也不能让这份保留idle取得新清流资格。
+原lease getter不检查confidence；新增公开反向输入只在原socket idle之后接受该unknown快照，
+应保留正文；随后当前authoritative idle仍应结束。visual validation pending=false，隔离原validator。
+
+`c1c-terminal-confidence-red`：20 PASS / 1行为FAIL，2.849秒。
+进一步使controlState=unavailable，与实际producer的未知状态组合一致；
+`c1c-terminal-confidence-unavailable-red`仍20 PASS / 1行为FAIL，原收据保留。
+产品尚未修改。窄修只给C1c新增分支加入confidence=authoritative，不重写原status呈现或控制lease。

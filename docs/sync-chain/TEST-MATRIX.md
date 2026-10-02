@@ -52,6 +52,8 @@
 | R44 | T2 event先入隔离队列，随后退休T1显示 | 同source/runtime/authority、时间不旧的T2不被T1退休清空；原flush验证后应用 | PASS direct T2与先旧terminal两项public契约，原两项red保留；同binding/authority范围，真实双turn NOT_RUN；E054/E055 |
 | R45 | visual pending 256/257策略 | 对照provisional visual原则审定溢出/重放/completion副作用 | NOT_RUN；只登记原现状，暂不迁移此队列；RUNTIME-QUEUE-ENTRY |
 
+| R46 | 正确runtime的unknown/unavailable快照保留旧idle | 保留的activity不取得新terminal清理资格；后续authoritative idle仍结束 | FAIL 公开20 PASS/1 FAIL；Bridge producer已明确confidence降级，E056 |
+
 R09/R10 的最上游是隔离 Provider fixture，使用真实 Bridge、协议、SQLite 和页面相关代码；
 即使 PASS，也只证明接收闭环，不冒充 R13/R14。
 

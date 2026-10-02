@@ -21,7 +21,8 @@ C1c 原候选在同一 socket 输出未改变时，用 source/local generation �
 - Dart 协议负责可选、非空、最大 256 字符验证及 JSON round trip。
 - SQLite 继续通过 status.toJson/fromJson 保存，不另设缓存或写入者。
 - Cubit 新终态清理同时要求 status.runtimeSessionId 等于当前 bound runtime。
-  原 source/time/provider/authority/ticket/revision 条件仍然成立。
+  原 source/time/provider/authority/ticket/revision 条件仍然成立；终态 confidence 必须 authoritative。
+  runtime producer 在 control 不可用时保留旧 activity 并降级 confidence，不能凭保留的 idle 清流（E056）。
 
 ## 兼容与范围
 

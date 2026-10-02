@@ -42,6 +42,7 @@ ConversationSyncV2Status _status({
   String source = 'bridgeRuntime',
   String? executionHost = 'bridge',
   String? runtime = _runtime,
+  String confidence = 'authoritative',
 }) => ConversationSyncV2Status.fromJson({
   ...ConversationSyncV2Status(
     provider: provider,
@@ -51,7 +52,7 @@ ConversationSyncV2Status _status({
     result: 'none',
     runtimeAttachment: 'loaded',
     source: source,
-    confidence: 'authoritative',
+    confidence: confidence,
     observedAt: observedAt,
     executionHost: executionHost,
     activeTurnId: activity == 'working' ? turn : null,
@@ -581,6 +582,38 @@ void main() {
       },
     );
   }
+
+  test('unproven runtime status cannot acquire terminal cleanup', () async {
+    final cubit = createCubit();
+    await streamFinal();
+    bridge.emitMessage(
+      const StatusMessage(status: ProcessStatus.idle),
+      sessionId: _runtime,
+    );
+    await pumpEventQueue();
+    // Bridge preserves earlier activity while control is reconciling or
+    // unavailable, but marks that snapshot confidence unknown. Its apparent
+    // idle is not new terminal evidence, even for the right attachment.
+    cubit.updateDetachedProviderStatus(
+      ConversationSyncV2Status.fromJson({
+        ..._status(
+          activity: 'idle',
+          confidence: 'unknown',
+          observedAt: '2026-10-02T11:00:02.000Z',
+        ).toJson(),
+        'controlState': 'unavailable',
+      }),
+      sourceFingerprint: _source,
+    );
+    expect(streaming.state.isStreaming, isTrue);
+    expect(streaming.state.text, 'Final answer');
+    cubit.updateDetachedProviderStatus(
+      _status(activity: 'idle', observedAt: '2026-10-02T11:00:03.000Z'),
+      sourceFingerprint: _source,
+    );
+    expect(streaming.state.isStreaming, isFalse);
+    expect(streaming.state.text, isEmpty);
+  });
 
   test('runtime identity participates in duplicate status fencing', () async {
     final cubit = createCubit();
