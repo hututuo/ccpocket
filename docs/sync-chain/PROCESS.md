@@ -1438,3 +1438,46 @@ exit0，17.559秒；diff SHA256 `30d2aae9ed3ff088f68d334e0bae92d5430c4c247334161
 此结构批没有修改上一批消息、数量/UTF-8预算、身份/拒绝策略或deadline。
 接下来冻结source/test/doc输入，完整Mobile/Bridge、analyze/typecheck/format与固定SHA独立复核。
 最终全量含原七黑盒；期间不再编辑产品或测试，失败如实保留后才改变下一输入。
+
+## E059 — C1c/C1d 固定输入的完整门禁与独立复核
+
+源码、测试及文档冻结为 `da3d3f610c4507ad15c501a9c8c7ffeceb143dac`；
+所有检查开始 clean，检查期间没有编辑，Mobile 全量结束后再次核对 HEAD/status 未变化。
+原始收据目录为 `/Users/developer/AI agent/Codex/_tmp/ccpocket-sync-chain-20261001/`。
+
+| 收据 | 结果 | 退出码 / 时长 |
+|---|---|---|
+| c1d-final-full-mobile | 3370 PASS / 4 SKIPPED；含原三文件七个真实 Bridge→JSON→SQL→原页面黑盒 | 0 / 353.671秒 |
+| c1d-final-full-bridge | 2546 PASS / 1 SKIPPED；124 files PASS / 1 SKIPPED，Node22 | 0 / 19.092秒 |
+| c1d-final-full-analyze | 0 error/warning；1019 info，其中测试 helper 同一 null 检查产生两条新增写法提示 | 0 / 23.023秒 |
+| c1d-final-format | 九个改变的 Dart 文件，0 changed | 0 / 0.682秒 |
+| c1d-final-bridge-typecheck | package-local TypeScript 路径不存在，编译器未执行；保留命令错误 | 1 / 0.191秒 |
+| c1d-final-bridge-typecheck-corrected | 根目录 hoisted TypeScript noEmit，Node22 | 0 / 3.814秒 |
+
+Bridge build 继承 E053 的 `c1c-runtime-status-identity-build`（0 / 5.769秒，host Node26/npm11）：
+E053 `1ee38207` 与本次冻结输入的 Bridge tree 同为 `61fda2bdb14f2325a96957186dcc6ac0ade3f4e6`。
+完整 Bridge 测试是本次实际重跑；没有继承 E041 的旧 Bridge build。
+`c1d-final-input-identity.json` 同时记录四个依赖文件和两个原 receiver 的 Git blob 未变化。
+
+`c1d-final-runtime-identity-page-evidence.json` 摘录完整黑盒的新 Bridge 帧：35 个 status 带 runtime 身份。
+held-final 的 terminal-before-completion 时 chat=idle、stream=false、text/thinking 为空，
+最终答复 index3、两条过程消息 index1/2，最终答复未收入折叠；release 的 runtime/authority/event 身份保持一致。
+这是当前选定轨迹的直接证据，不能倒推历史 R29 或 `095cab00` 全量 FAIL 的根因。
+
+固定 `da3d3f6` 的独立 GPT-6 Luna/max 只读复核没有发现本次新增 P0–P2，未改文件或跑测试。
+核对范围为 status 身份生产/剥离/签名/持久 JSON、新终态清理条件，以及 helper 的单 owner、
+FIFO、容量拒绝、remove-before-apply 和原取消出口；原 mutation lease 不在本次验收范围。
+
+复核发现 E054/E055 与入口文档把 authority 清理范围写得过宽，应按实际测试收窄：
+只有已有 visible overlay tracking 时，原 reconcile 才检查其 authority 不匹配并清旧 pending。
+若仅有 pending、没有已呈现 owner，原函数早退；不匹配且未按时间证明旧的 authority event 继续隔离。
+这个边界在 red parent 已存在，不由 preservePending/helper 引入；未来 authority 是否应等待仍未审定。
+十三项契约中的 authority 反向输入有 visible-before-authority，不能推广为所有 authority 替换均清队列。
+后续矩阵/入口明确保留此缺口，原 FAIL/PASS 收据不修改。
+
+完整诊断比对 `c1d-final-analysis-comparison.json` 只新增两条测试写法 info，无既有诊断消除。
+全量结束后仅把测试 map entry 的 `if (runtime != null)` 改为 Dart null-aware entry；
+产品源码、断言、身份与输入语义不变。下一输入只做相关测试、完整 analyze、格式与产品 blob 比对，
+不把它写成在新 SHA 重跑了全量。最终静态验收待该复查登记。
+真实 Provider、Simulator/真机、生产部署、云 CI、OTA/签名安装/stable/release 仍分别 NOT_RUN；
+当前原生 Dart/Marionette 工具不可用，设备 UI 自动化为 BLOCKED。

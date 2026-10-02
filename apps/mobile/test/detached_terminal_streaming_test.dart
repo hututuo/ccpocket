@@ -59,7 +59,7 @@ ConversationSyncV2Status _status({
     controlState: activity == 'working' ? 'steerable' : 'writable',
     authorityGeneration: authority,
   ).toJson(),
-  if (runtime != null) 'runtimeSessionId': runtime,
+  'runtimeSessionId': ?runtime,
 });
 
 void main() {
