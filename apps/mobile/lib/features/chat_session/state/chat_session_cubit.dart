@@ -336,6 +336,10 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
     'preservedVisualTurnId': _detachedPreservedVisualTurnId,
     'visualTurnValidationPending': _detachedVisualTurnValidationPending,
     'pendingVisualMessageCount': _detachedPendingVisualMessages.length,
+    'streamInputRevision': _streamingCubit.inputRevision,
+    'terminalVisualTicketRevision':
+        _detachedTerminalVisualTicket?.streamRevision,
+    'terminalVisualTicketMatches': _hasUnchangedDetachedTerminalVisualTicket,
     'timelineProjection': <String, Object?>{
       'lastAction': _detachedProjectionLastAction,
       'canonicalCount': _detachedProjectionCanonicalCount,
@@ -1427,7 +1431,12 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
     logger.info(
       '[timeline_projection] event=runtime_overlay_quarantined '
       'thread=$_projectionThreadToken pending='
-      '${_pendingDetachedRuntimeOverlays.length}',
+      '${_pendingDetachedRuntimeOverlays.length} '
+      'authorityMatches=${event.authorityGeneration == _detachedAuthorityGeneration} '
+      'turnMatches=${event.turnId == _detachedActiveTurnId} '
+      'hasActiveTurn=${_detachedActiveTurnId?.isNotEmpty == true} '
+      'streamRevision=${_streamingCubit.inputRevision} '
+      'ticketRevision=${_detachedTerminalVisualTicket?.streamRevision}',
     );
   }
 
@@ -2272,6 +2281,11 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
     if (!detachedPreview || isClosed) return;
     final sourceChanged = _adoptDetachedProviderSource(sourceFingerprint);
     if (status == null) {
+      logger.info(
+        '[timeline_projection] event=provider_status_absent '
+        'thread=$_projectionThreadToken '
+        'hadActiveTurn=${_detachedActiveTurnId?.isNotEmpty == true}',
+      );
       final authorityChanged =
           _detachedAuthorityObserved ||
           _detachedExecutionHost != null ||
@@ -2379,6 +2393,16 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
     final activeTurnId = status.activeTurnId?.trim();
     final hasActiveTurnId = activeTurnId?.isNotEmpty == true;
     if (!replaysRejectedAuthority) {
+      if (nextStatus == ProcessStatus.idle) {
+        logger.info(
+          '[timeline_projection] event=terminal_visual_admission '
+          'thread=$_projectionThreadToken '
+          'confirmedTurn=${_detachedActiveTurnId?.trim().isNotEmpty == true} '
+          'streamRevision=${_streamingCubit.inputRevision} '
+          'ticketRevision=${_detachedTerminalVisualTicket?.streamRevision} '
+          'ticketMatches=$_hasUnchangedDetachedTerminalVisualTicket',
+        );
+      }
       // Filter runtime rows while their assistant aliases still identify them
       // as overlays; visual reset below clears those aliases.
       _reconcileDetachedRuntimeOverlayForStatus(
@@ -2437,6 +2461,7 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
       'thread=$_projectionThreadToken '
       'source=${_projectionSourceToken(_detachedProviderSourceFingerprint)} '
       'activity=${status.activity} attention=${status.attention} '
+      'hasActiveTurn=$hasActiveTurnId '
       'host=${status.executionHost ?? 'unknown'} '
       'control=${status.controlState ?? 'unknown'} '
       'authority=${authorityGeneration?.isNotEmpty == true} '
@@ -4894,6 +4919,11 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
         sourceFingerprint: _detachedProviderSourceFingerprint,
         streamRevision: _streamingCubit.inputRevision,
       );
+      logger.info(
+        '[timeline_projection] event=socket_terminal_visual_ticket '
+        'thread=$_projectionThreadToken '
+        'streamRevision=${_streamingCubit.inputRevision}',
+      );
     }
     if (msg is SystemMessage &&
         msg.subtype == 'set_permission_mode' &&
@@ -5494,6 +5524,20 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
         : null;
 
     // --- Streaming state (separate cubit) ---
+    if (detachedPreview &&
+        _detachedTerminalVisualTicket != null &&
+        affectVisibleStreaming &&
+        (update.resetStreaming ||
+            originalMsg is StreamDeltaMessage ||
+            originalMsg is ThinkingDeltaMessage ||
+            originalMsg is AssistantServerMessage)) {
+      logger.info(
+        '[timeline_projection] event=stream_input_after_socket_idle '
+        'thread=$_projectionThreadToken kind=${originalMsg.runtimeType} '
+        'reset=${update.resetStreaming} '
+        'streamRevision=${_streamingCubit.inputRevision}',
+      );
+    }
     if (update.resetStreaming) {
       messageHandler.currentStreaming = null;
       if (affectVisibleStreaming) _streamingCubit.reset();

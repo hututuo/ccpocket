@@ -38,7 +38,7 @@ ConversationSyncV2Status _status({
   String provider = 'codex',
   String thread = _thread,
   String authority = _authority,
-  String turn = _turn,
+  String? turn = _turn,
 }) => ConversationSyncV2Status(
   provider: provider,
   providerSessionId: thread,
@@ -182,6 +182,39 @@ void main() {
           ),
         );
         await pumpEventQueue();
+        expectCompletedLayout(cubit);
+      },
+    );
+  }
+
+  for (final temporarilyAbsent in [false, true]) {
+    test(
+      'socket completion closes output with ${temporarilyAbsent ? 'temporarily absent' : 'turnless working'} provider projection',
+      () async {
+        final cubit = createCubit();
+        await streamFinal();
+        cubit.updateDetachedPreviewHistory(history(finalReply: true));
+        if (!temporarilyAbsent) {
+          cubit.updateDetachedProviderStatus(
+            _status(turn: null, observedAt: '2026-10-02T11:00:01.500Z'),
+            sourceFingerprint: _source,
+          );
+        }
+        bridge.emitMessage(
+          const StatusMessage(status: ProcessStatus.idle),
+          sessionId: _runtime,
+        );
+        await pumpEventQueue();
+        if (temporarilyAbsent) {
+          cubit.updateDetachedProviderStatus(null, sourceFingerprint: _source);
+        }
+        expect(streaming.state.isStreaming, isTrue);
+        expect(streaming.state.text, 'Final answer');
+        expect(cubit.detachedActionBrokerTurnId, isNull);
+        cubit.updateDetachedProviderStatus(
+          _status(activity: 'idle', observedAt: '2026-10-02T11:00:02.000Z'),
+          sourceFingerprint: _source,
+        );
         expectCompletedLayout(cubit);
       },
     );

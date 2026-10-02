@@ -16,7 +16,7 @@
 | R09 | 真 Bridge → JSON → Dart → SQLite → Cubit/layout | 与 Provider fixture 的稳定 ID/顺序/内容相符 | PASS 最新三文件六用例，含 partial-summary / older-pages 与 pending-focus 原页面；全量均通过；旧 mutation/R35 FAIL 保留；E041 |
 | R10 | stdio JSON-RPC 模式 | 不旁路生产 RPC 解码/分发 | PASS 基线 full-page；E002 |
 | R11 | SQLite 关闭重开 | durable 内容可恢复 | PASS 基线 receiver；E002 |
-| R12 | 全 Mobile analyze/tests | 无新增 error/warning/回归 | PASS 最新 adf337ea clean：3333 PASS / 4 SKIPPED，--concurrency=1；analyze 0 error/warning、1017 既有 info 完整文本无新增；E041。此前 2f64e383 全量 FAIL 与 d0f164e5 观测输入 PASS 均保留 |
+| R12 | 全 Mobile analyze/tests | 无新增 error/warning/回归 | FAIL 最新候选095cab00 clean：3344 PASS / 4 SKIPPED / 1 FAIL（pending-focus 原fold）；analyze无新增、format通过。已接受的adf337ea完整3333 PASS/4 SKIPPED仍为历史门禁；失败不覆盖，E041/E049 |
 | R13 | 真实 Provider 新事件 | 原始记录与 Bridge/cache/page 对照 | NOT_RUN |
 | R14 | 模拟器 / 真机 / 生产 | 各自独立验收 | NOT_RUN；本轮原生 UI 自动化工具不可用为 BLOCKED，不能用 VM widget host 代替设备验收 |
 | R15 | 调度退避、失败预算、取消计时器、旧回调 | 1/2/4 秒重试、4 次失败封顶；取消后无重试，旧完成不清新 owner | PASS 抽取后四个 scheduler 用例；E007 |
@@ -44,6 +44,7 @@
 | R37 | 已确认当前 turn 的 idle 先于最终 runtime completion 的 consumer delivery | 当前终态退休 transient；canonical 前/后到达均 A/B fold、final 在外；晚到旧完成不重启，运行中/旧身份仍隔离 | PASS 11 项 public 契约与原三文件七个黑盒；基线两项/原页面 red 和旧 Cubit 敏感性 FAIL 均保留；最终门禁待跑；E043–E048。历史 R29 归因仍未知 |
 | R38 | bootstrap idle / 未入库 completion 与终态清理 | 未确认 turn 的 idle 不抢走新 delta；filter 在 alias reset 前执行，runtime completion 无 canonical 写权 | PASS 两项行为 red→green、原 receiver 未改且恢复；最终全量待跑。E044 首修对应两项缺口和dcf0b086完整3340 PASS/4 SKIPPED/1 FAIL保留；E045/E048 |
 | R39 | 旧 terminal 接纳晚于新 raw delta / coalesced pending delta | 旧终态不能清后来的增量；下一次匹配 socket+committed idle 仍能结束流 | PASS 11 项 public 契约，text/thinking append 与 reset 由原 StreamingStateCubit 独占 revision；两项 red 保留；最终全量待跑，尚非真实双 turn/设备回放；E047/E048 |
+| R40 | turnless working / 暂缺 provider projection 后的 socket 完成 | 当前 bridgeRuntime 权威 idle 与未变化 socket ticket 可退休流；普通 idle、无权威、外部 host 不取得新清流资格 | FAIL 两项 public 行为 red；与095cab00完整原页面FAIL的直接关系尚未证明；E049 |
 
 R09/R10 的最上游是隔离 Provider fixture，使用真实 Bridge、协议、SQLite 和页面相关代码；
 即使 PASS，也只证明接收闭环，不冒充 R13/R14。

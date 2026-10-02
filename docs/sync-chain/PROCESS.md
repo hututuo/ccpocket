@@ -2,16 +2,17 @@
 
 ## 当前断点
 
-- 时间：2026-10-02（Asia/Shanghai；此前条目保留当时记录）。
+- 时间：2026-10-03（Asia/Shanghai；此前条目保留当时记录）。
 - 分支：`codex/sync-chain-extraction-20261001`。
 - 起始 SHA：`930f1267e949c6cf2095761cc71c43cca08c6dc3`。
-- 阶段：A0–A3 / B1、B2、C1a 与 C1b 选定接缝已完成源码门禁；C1c 在原终态入口建立 R37 red，暂不抽取 runtime queue。
+- 阶段：A0–A3 / B1、B2、C1a 与 C1b 选定接缝已完成源码门禁；C1c 终态候选的全量出现 1 FAIL，继续原接点的契约修复，暂不迁移 runtime queue。
 - 最新完整门禁产品 SHA：`ce51e28027087e5fe4d4d79533390203ae3735a8`，canonical 与焦点行为分开提交。
 - 最新固定测试/fixture 输入：`adf337ea5f2ddddf3639da4e37b020435033b1d1`，全部门禁启动时 clean。
 - 最新全量 Mobile 3333 PASS / 4 SKIPPED（--concurrency=1），Bridge 2546 PASS / 1 SKIPPED；build/typecheck/格式通过。
 - analyze 0 error/warning，1017 既有 info 完整文本逐项无新增；产品/fixture 固定 SHA 独立复核无剩余可证明 P0–P2。
 - R35 pending focus 缺陷已确定性旧 Service red → 窄修 → 相同原页面 green，关闭选定交错；旧两次 FAIL 与恢复收据保留。
-- 当前证据、提交索引与回退见 E038–E042；此后文档提交不改变产品或测试身份。
+- C1c `095cab00` clean 全量 3344 PASS / 4 SKIPPED / 1 FAIL，不是可验收候选；新 R40 两项 red 和诊断见 E049。
+- 已接受门禁证据见 E041；当前调查、提交索引与回退见 E043–E049。
 - E024 的历史并发折叠等待 FAIL 尚未归属；当前同四文件默认并发 50 PASS，不能据此关闭旧失败或宣称设备/运行链验收。
 - 真实 Provider、模拟器/真机、生产 Bridge、云 CI、OTA/发布 NOT_RUN；原生 UI 自动化工具缺失为 BLOCKED。
 - 最新提交与验证身份在后续条目登记；不能从本节推断部署状态。
@@ -1220,3 +1221,41 @@ bootstrap 测试的后续正向终态缺真实 socket idle。补该接点与 pum
 这仍不是两轮真实 Provider/设备验收，也不证明每一种 pending runtime overlay 交错。
 队列职责与容量、取消、未来 authority 的契约在下一份入口文档梳理；不趁此修复直接迁移队列。
 E044/E046 的较宽清理方案及全量 FAIL 均保留，历史 R29 仍未归因。
+
+## E049 — 全量保留失败并证明 turn ID 缺失的终态窗口
+
+E048 产品与输入冻结为 `095cab004e394dcef418f05dc76cbd91df42090c`；检查开始时 clean，运行期间未编辑。
+`c1c-ticket-final-full-mobile`：3344 PASS / 4 SKIPPED / 1 FAIL，exit 1，388.062 秒。
+失败为原 complete pending-focus 页的 final-outside-collapsed-process，不是新增 fixture 的断言。
+trace `c1c-ticket-final-full-mobile-traces/2026-10-02T12-26-08.690Z-25183291-live-segments/`：
+A/B/final 可见性与 pending-focus catch-up PASS；SQL/Cubit 四行稳定 ID/顺序/hash 正确；
+idle、external=false、activeTurnId=null、validationPending=false，但 streaming=true / Final answer，fold=[1,2,3]。
+最终 overlay sequence81 在 wire 存在，原 consumer 记 quarantine 后 rejected，终态 sequence84/96；
+原失败缺少 ticket revision/匹配接点事实，不能仅凭 wire 顺序断言原因。
+`c1c-ticket-full-failure-evidence.json` 保存所选事实与原 trace SHA，不覆盖旧 R29。
+
+同 clean 输入 analyze exit0 / 20.163 秒，0 error/warning、1017 info；
+完整诊断文本及重复计数与 E041 相同（原始行号变化单独保留），见 `c1c-ticket-final-analysis-comparison.json`。
+四文件 format 0 changed / 0.643 秒。
+独立 GPT-6 Luna/max 当时只读固定 SHA 未见可证明 P0–P2；该结论不覆盖新出现的全量 FAIL，候选不获验收。
+Bridge tree、root package/lock 与 Mobile pubspec/lock 同 adf337ea，继承 E041 Bridge 门禁，
+对象核对见 `c1c-ticket-final-bridge-input-identity.json`；无新的部署或运行证明。
+
+随后仅加只读诊断：current input revision、ticket revision/匹配快照；
+socket capture / terminal admission、provider status 暂缺、overlay quarantine 匹配条件及流操作类型日志，
+不记正文或凭证，不改控制、队列、SQL或等待。
+`c1c-terminal-ticket-admission-observation` 原单个 pending-focus 页 PASS / 11.258 秒；
+`c1c-terminal-ticket-full-page-observation` 原五页 PASS / 25.732 秒。
+这些不是旧 fullQA 输入；晚到完成可令 revision7→9 并正常清流，因此 ticket mismatch 本身并非失败。
+外部桌面 idle guard 被初步排除；全量那次 quarantine 的具体直接触发仍缺同步 admission 事实，保留未知。
+
+源码核对发现另一明确契约缺口：Provider projection 可以暂缺，或合法 working 不带 turn ID；
+二者原本就撤销 activeTurnId，但不代表 socket 正文消失。普通 idle 之后的当前权威 idle 应能退休该流，
+不能让一个曾用于控制权限的 turn ID 成为清流的唯一前提。
+补两项 public 入站契约，在相同 generation/source、无后续增量的 socket idle 后，分别注入
+turnless working 或暂缺 projection，再接受合法 bridgeRuntime idle。ordinary idle 自身仍不清流；
+新 delta/旧时间/错误身份/旧 binding 的原十一项保护不改。
+`c1c-terminal-turnless-socket-red`：11 PASS / 2 行为 FAIL，exit1，3.196 秒。
+这是新确定性缺口，尚不把它冒充上次全量或历史 R29 的完整因果解释。
+下一步用当前 Bridge 权威 lease 与未变化 socket ticket 约束清流，替代仅依赖旧 activeTurnId；
+增加无权威/外部 host 的反向保护，先分项，再冻结源验原七黑盒与全量。
