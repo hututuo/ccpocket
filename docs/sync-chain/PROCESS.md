@@ -710,3 +710,25 @@ History 本身不会进入 `_recordOutgoingDraftEvidence` 的清理 case，不�
 C1a 同输入全量收据只作基线；C1b 新产品行为须有自己的最终门禁。
 E024 并发折叠等待仍未归属，保留原断言和输入/SQL/Cubit/layout 轨迹，不延长等待或删除断言。
 当前本条登记时产品未变，C1b 新契约/门禁尚未运行。
+
+## E031 — duplicate canonical 的原 Cubit 红灯
+
+父范围提交：`a8a5508b66f41e016f6b5aafe16f6bab78795ee2`，产品代码未改。
+`c1b-baseline-preview-projection.json/.log`：clean 起点 331 PASS，exit 0，68.202 秒；
+覆盖原 Cubit/投影/durable/十三个 SQL 页面/layout 与四个真实 Bridge 接收/页面黑盒，串行执行。
+
+新增 `detached_canonical_commit_test.dart`，仅调用原 `updateDetachedPreviewHistory`、
+原 draft 存储/恢复和公共观察值，复用原 mock Bridge 宿主；不手工 emit 正确状态，也不修改 SQL。
+原 Cubit 层的受控 History 输入与真实 SQL/Bridge 黑盒证明范围分别保留。
+`c1b-red-canonical-admission`：2 PASS / 3 FAIL，exit 1，2.779 秒。
+重复 canonical 已被原 guard 拒绝、last-good assistant 顺序仍在，但实际仍发生：
+projectPath 变为 /rejected-project、出现 rejected candidate 的 PermissionApproval、已显示 queue 被清空。
+原有 duplicate 用例只检查条目/诊断，没有覆盖候选的其他状态接受。
+draft/本地 outgoing ID 在拒绝时保留，合法 exact commit 才消费；不同 client ID 的同正文不能清理他人 draft，
+两项正向保护 PASS，未将它们描述为新缺陷。
+
+再补 paging availability 用例：拒绝的候选不应通过 hasEarlier=false 关闭仍有效的历史入口；
+独立 `c1b-red-canonical-paging` 红灯收据与实际信号保留。
+本 checkpoint 不是可用候选。修复限定为 V2 detached durable history 的整体接受判断前移，
+在应用分页/设置/交互/投递等状态前判定候选有效；legacy empty 继续保留原语义。
+先独立行为修复，随后才将 prepare/admission 与应用阶段分清，沿用原纯投影 reducer。
