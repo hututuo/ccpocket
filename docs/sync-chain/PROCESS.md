@@ -1356,3 +1356,28 @@ Bridge原runtime生命周期测试核对replacement/reopened两种身份，watch
 完整Bridge/Mobile及最终固定SHA复核留待本轮候选冻结，不能把分项写成已完成验收。
 下一批只梳理隔离queue的容量、byte退休与future turn交错；先公开契约，确定缺陷后独立修，再搬单一owner。
 同源旧status可能误建原控制lease的既有风险独立记录，当前视觉修复没有证明mutation全链正确。
+
+## E054 — 隔离队列的公开容量/退休契约与未来 turn 丢失
+
+父输入 `1ee3820736d4f7b27c1ad8caa8efa5537013289a`，产品没有改变。
+新增detached_runtime_overlay_queue_test.dart，以正式runtime overlay stream/status公开接点输入，
+对外部稳定ID/正文顺序、独立UTF-8规范化消息预算、既有只读diagnostic观察做断言；不spy私有方法。
+
+九项容量/退休保护PASS：32/33条、duplicate不占预算、不淘汰已排消息；
+含中文的精确65536 bytes、单条65537 bytes；stale删除后byte归零/新owner可用；
+accepted event重放、runtime/source/suspend三种失效、close后迟到。canonical user始终保留。
+另两项在原代码行为FAIL：同一source/runtime/authority下T2 overlay先于Cubit的T2 status进入隔离队列，
+此前T1已经有visible overlay。直接T2 working或先T1 terminal再T2 working，退休T1 tracking时
+_resetDetachedRuntimeOverlayTracking无条件清pending，T2合法payload因此丢失。
+T2 event observedAt晚于T1 terminal，不属于已证明过期；没有制造authority或绕过runtime envelope fence。
+这是public双lane契约，尚非真实两轮Provider/设备时序回放。
+
+- c1d-runtime-queue-contracts-red：0 PASS / 11 FAIL，2.844秒。Root测试误读diagnostic顶层，
+  实际指标在timelineProjection内；这是fixture错误，不作为产品red。
+- 修正层级、不改产品/正文/边界断言后，c1d-runtime-queue-contracts-red-corrected：
+  9 PASS / 2行为FAIL，exit1，2.035秒；diff SHA256 `4cc5ab1bfec23a58de17f252990cb9afde8446acd04bf9a1b573fdae4c6bbe95`。
+
+接下来只分开“退休已呈现T1 tracking”与“作废整个pending owner”。
+同runtime/generation/authority的turn退休保留pending，随后原flush匹配当前turn或按时间拒绝；
+runtime/source/suspend/close及不匹配authority仍使用原完整清理。先窄修green，再单独迁移queue map/bytes。
+不搬visual pending、不改变256/257策略或两个queue的预算/去重边界。

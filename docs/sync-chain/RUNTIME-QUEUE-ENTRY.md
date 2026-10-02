@@ -2,7 +2,8 @@
 
 本文件从 C1c `89084bcb` 的队列责任梳理；随后 runtime status 身份已补分项契约，见 PROCESS E052/E053。
 最终全量门禁待候选冻结登记，本文件不是终态候选的完整验收。
-这是下一批的入口；下面候选模块尚未实现，现有两个队列仍由原 Cubit 持有。
+当前已执行第一组公开契约：容量/退休九项PASS，future turn两项行为FAIL（E054）。
+下面候选模块尚未实现，现有两个队列仍由原 Cubit 持有；先在原接点修缺陷。
 终态修复目前只证明 R37–R42 的分项契约，历史 R29 和 095cab00 全量失败的直接归因仍留未知。
 
 ## 两套队列不能合并
@@ -53,7 +54,7 @@ visual 同 turn、旧 ID 未知、首次 source 确认、不同 turn、idle 和�
 |---|---|
 | quarantine 32/33、精确 byte 边界、duplicate 的预算占用 | 未验证消息到边界仍隔离；超限不能更改已有正文/顺序/bytes；重复不吃预算 |
 | flush 后 remove/reject/reset 的 byte 退休 | 总 bytes 回到准确值，后续合法事件可使用腾出的容量；不会负数或保留旧 owner |
-| future authority/turn 在旧 terminal 前到达 | 明确应该保留还是丢弃，核对原 Provider 时序；当前 reset 会清 pending，不宣称已保证未来事件可用 |
+| future authority/turn 在旧 terminal 前到达 | 同source/runtime/authority且T2时间不旧时应保留；两项public输入已FAIL，先分开visible退休与pending owner失效。真实Provider双turn仍NOT_RUN |
 | visual 256/257 overflow、buffered completion/control 副作用 | 先对照 provisional visual 的产品原则；不能照抄现在的 replay 当正确预期 |
 | close 后迟到 observer/raw callback 与未 flush thinking | 原关闭契约仍成立，不能因为 state owner 搬动复活旧输出或产生 side effect |
 | 两个真实 Provider turns、后台/长会话 | 原始 Provider record→wire→SQL→原页面逐层对照；fixture/public 双 lane PASS 不代替 |
