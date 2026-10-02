@@ -82,7 +82,7 @@ void main() {
     if (finalReply) _assistant('assistant-terminal-final', 'Final answer'),
   ];
 
-  ChatSessionCubit createCubit() {
+  ChatSessionCubit createCubit({bool confirmActiveTurn = true}) {
     final cubit = ChatSessionCubit(
       sessionId: _thread,
       provider: Provider.codex,
@@ -94,7 +94,10 @@ void main() {
       detachedRuntimeOverlayStream: overlays.stream,
     );
     addTearDown(cubit.close);
-    cubit.updateDetachedProviderStatus(_status(), sourceFingerprint: _source);
+    cubit.updateDetachedProviderStatus(
+      _status(activity: confirmActiveTurn ? 'working' : 'idle'),
+      sourceFingerprint: _source,
+    );
     return cubit;
   }
 
@@ -204,6 +207,88 @@ void main() {
     expect(streaming.state.isStreaming, isTrue);
     expect(streaming.state.text, 'Final answer');
   });
+
+  test(
+    'bootstrap idle cannot retire output before active turn confirmation',
+    () async {
+      final cubit = createCubit(confirmActiveTurn: false);
+      await streamFinal();
+      // The socket can already carry a new delta while the status reader is
+      // still delivering its earlier bootstrap idle snapshot.
+      cubit.updateDetachedProviderStatus(
+        _status(activity: 'idle', observedAt: '2026-10-02T11:00:02.000Z'),
+        sourceFingerprint: _source,
+      );
+      expect(streaming.state.isStreaming, isTrue);
+      expect(streaming.state.text, 'Final answer');
+      cubit.updateDetachedProviderStatus(
+        _status(observedAt: '2026-10-02T11:00:03.000Z'),
+        sourceFingerprint: _source,
+      );
+      expect(streaming.state.isStreaming, isTrue);
+      cubit.updateDetachedProviderStatus(
+        _status(activity: 'idle', observedAt: '2026-10-02T11:00:04.000Z'),
+        sourceFingerprint: _source,
+      );
+      expect(streaming.state.isStreaming, isFalse);
+      expect(streaming.state.text, isEmpty);
+    },
+  );
+
+  test(
+    'terminal filters uncommitted completion while its overlay identity is intact',
+    () async {
+      final cubit = createCubit();
+      overlays.add(
+        ConversationSyncV2EventMessage(
+          event: ConversationSyncV2EventKind.runtimeOverlay,
+          subscriptionId: 'subscription-terminal',
+          bridgeInstanceId: 'bridge-a',
+          codexSourceId: 'source-a',
+          batchId: 'batch-terminal',
+          sequence: 10,
+          provider: 'codex',
+          providerSessionId: _thread,
+          overlayId: 'uncommitted-final-overlay',
+          observedAt: '2026-10-02T11:00:01.500Z',
+          originGeneration: 'runtime:$_runtime:$_authority',
+          runtimeSessionId: _runtime,
+          authorityGeneration: _authority,
+          turnId: _turn,
+          overlayMessage: _assistant(
+            'assistant-terminal-final',
+            'Final answer',
+          ),
+        ),
+      );
+      await pumpEventQueue();
+      List<String> assistantIds() => cubit.visibleEntries
+          .whereType<ServerChatEntry>()
+          .map((entry) => entry.message)
+          .whereType<AssistantServerMessage>()
+          .map((message) => message.message.id)
+          .toList();
+      expect(assistantIds(), [
+        'assistant-terminal-a',
+        'assistant-terminal-b',
+        'assistant-terminal-final',
+      ]);
+      cubit.updateDetachedProviderStatus(
+        _status(activity: 'idle', observedAt: '2026-10-02T11:00:02.000Z'),
+        sourceFingerprint: _source,
+      );
+      // Only SQLite history can own completed durable rows after the overlay
+      // lease ends. Clearing aliases first must not promote a live row.
+      expect(assistantIds(), ['assistant-terminal-a', 'assistant-terminal-b']);
+      cubit.updateDetachedPreviewHistory(history(finalReply: true));
+      expectCompletedLayout(cubit);
+      expect(assistantIds(), [
+        'assistant-terminal-a',
+        'assistant-terminal-b',
+        'assistant-terminal-final',
+      ]);
+    },
+  );
 
   for (final wrongThread in [true, false]) {
     test(

@@ -1114,3 +1114,32 @@ release 同一真实 final event 后仍保持上述折叠，canonical 四行无�
 
 此处只证明 R37 窄窗口；当前全量/独立复核/同冻结输入旧 Cubit 敏感性尚待下一条登记。
 历史 R29 仍没有失败瞬间布局事实，不随本修复关闭；运行链/设备/生产状态不变。
+
+## E045 — 全量暴露 bootstrap 边界与 alias 清理顺序
+
+E044 产品 `6c0ac738c8f44c4fb4eda2e4074aae47bc8eda91`；
+观测安全输入 `dcf0b0865479d3569251b35d7f7f3176ca1c9879` 只把未 mount 时的 streaming snapshot 记 null，
+防止诊断自身抛异常，未改原断言。固定该输入、只暂换旧 Cubit 后：
+`c1c-terminal-status-old-cubit-sensitive` 在原 fold 再次行为 FAIL，exit 1，21.278 秒；
+finally 以外部 backup 恢复修复源 SHA256 `6cc6340a125d2fc4fea2046bcc0ddc929c2ecc03f6b73d4f34b104a4497dc834`，
+status 为空；恢复记录 `c1c-terminal-cubit-sensitivity-restore.json`。
+
+随后在 clean dcf0b086 完整检查，未在运行期间改源码或测试：
+`c1c-terminal-final-full-mobile`，3340 PASS / 4 SKIPPED / 1 FAIL，exit 1，386.831 秒。
+FAIL 为原 live receiver 的 line 564：A completion 预期 ID=[A]，实际为空；
+它位于 await committed/mountPreview 之前，不是 SQLite 恢复后的断言。
+原 `emitSegment` 等待 sawStreaming 后 streaming=false，把此变化当 completion 到达。
+真实 trace `c1c-terminal-final-full-mobile-traces/2026-10-02T11-50-59.082Z-fbb88f9c-live-segments/`：
+bootstrap idle seq9 / observedAt 11:50:59.416Z；后续 working seq21、A overlay seq22 / .471Z。
+raw delta 可先于旧 bootstrap status 的异步读投影；此时尚未确认 activeTurnId，无条件 idle 清流会提前结算该边界。
+不放宽原 receiver 断言/等待，不以再次跑绿将这轮 FAIL 当偶发。
+同输入 analyze 0 error/warning、1017 info 完整文本及重复计数与 E041 相同，21.277 秒；
+三个本批 Dart 文件格式 0 changed，0.621 秒。此静态 PASS 不覆盖全量 FAIL。
+
+root 与独立 GPT-6 Luna/max 均确认另一个 P2：未入 SQL 的 runtime assistant completion 用 alias 标记为 overlay；
+先 visual reset 清 alias、再 runtime filter 会使该行失去临时身份并滞留。
+因此补两项 public 行为，而非用私有 spy：bootstrap 未确认 active turn 不清新输出，
+以及终态过滤未 commit completion、后续同 ID canonical 恰好一次接受。
+`c1c-terminal-boundaries-unit-red`：7 PASS / 2 行为 FAIL，exit 1，3.372 秒，产品仍为 E044。
+E044 不作验收候选；下一步在原状态接点限定已确认 turn，并先过滤 runtime overlay 后 reset visual。
+缺少 turn ID 的路径维持原验证/完成逻辑，不凭 ordinary state.status 推断 committed V2 活跃证据。
