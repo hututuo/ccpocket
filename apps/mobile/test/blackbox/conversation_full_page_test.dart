@@ -683,17 +683,62 @@ void main() {
             );
           }
 
+          Map<String, Object?> presentationSnapshot() {
+            final chat = mountedChat;
+            return {
+              'chatStatus': chat?.state.status.name,
+              'externalDesktopTurnActive':
+                  chat?.state.externalDesktopTurnActive,
+              'runtimeProjection': chat?.diagnosticRuntimeProjection,
+              'rows': chatRows(),
+              'renderedText': tester
+                  .widgetList<RichText>(find.byType(RichText))
+                  .map((widget) => widget.text.toPlainText())
+                  .toList(),
+              'disclosures': [
+                for (final widget
+                    in tester.widgetList<ChatIntermediateOutputsDisclosure>(
+                      find.byType(ChatIntermediateOutputsDisclosure),
+                    ))
+                  {
+                    'turnKey': widget.turn.key,
+                    'isActive': widget.turn.isActive,
+                    'hasTransientCurrentOutput':
+                        widget.turn.hasTransientCurrentOutput,
+                    'currentAssistantEntryIndex':
+                        widget.turn.currentAssistantEntryIndex,
+                    'finalAssistantEntryIndex':
+                        widget.turn.finalAssistantEntryIndex,
+                    'intermediateAssistantEntryIndices': widget
+                        .turn
+                        .intermediateAssistantEntryIndices
+                        .toList(),
+                    'expanded': widget.expanded,
+                  },
+              ],
+            };
+          }
+
+          List<Map<String, Object?>> canonicalSnapshot(
+            ConversationHotWindowSnapshot? window,
+          ) => [
+            for (final entry in window?.entries ?? const [])
+              {
+                'id': entry.entryId,
+                'index': entry.index,
+                'hash': entry.contentHash,
+                'message': entry.rawMessage,
+              },
+          ];
+
           void pass(ConversationHotWindowSnapshot window) {
             trace.add({
               'stage': stage,
               'result': 'PASS',
               'revision': window.revision,
               'source': target().fingerprint,
-              'rows': chatRows(),
-              'renderedText': tester
-                  .widgetList<RichText>(find.byType(RichText))
-                  .map((widget) => widget.text.toPlainText())
-                  .toList(),
+              'canonical': canonicalSnapshot(window),
+              ...presentationSnapshot(),
               'sync': diagnostics(),
             });
           }
@@ -959,9 +1004,25 @@ void main() {
             );
             trace.add({'stage': 'provider-rpc', 'result': 'PASS', ...provider});
           } catch (error, stack) {
+            final snapshot = <String, Object?>{};
+            // Diagnostics only: preserve the original assertion, deadline and
+            // mounted page. A snapshot error must not replace the test failure.
+            try {
+              snapshot.addAll(presentationSnapshot());
+              final window = await repository.loadConversationWindow(
+                target: target(),
+                provider: Provider.codex.value,
+                providerSessionId: threadId,
+              );
+              snapshot['revision'] = window?.revision;
+              snapshot['canonical'] = canonicalSnapshot(window);
+            } catch (snapshotError) {
+              snapshot['snapshotError'] = '$snapshotError';
+            }
             trace.add({
               'stage': stage,
               'result': 'FAIL',
+              ...snapshot,
               'error': '$error',
               'stack': '$stack',
               'sync': diagnostics(),

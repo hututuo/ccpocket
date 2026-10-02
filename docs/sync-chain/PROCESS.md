@@ -5,11 +5,11 @@
 - 时间：2026-10-02（Asia/Taipei）。
 - 分支：`codex/sync-chain-extraction-20261001`。
 - 起始 SHA：`930f1267e949c6cf2095761cc71c43cca08c6dc3`。
-- 阶段：A0–A3 / B1、B2 与 C1a 已完成；C1b 已开始原 V2 detached 投影接受/清理契约盘点，见 E030。
-- C1a 最终验证源码 SHA：`151c04752e0ce00568c73a6d9522bfe09c6a107c`，全量启动时 clean。
-- 3300 Mobile PASS / 4 SKIPPED（--concurrency=1）；Bridge 同输入继承 2546 PASS / 1 SKIPPED。
-- analyze 0 error/warning，1017 既有 info 逐项无新增；固定 SHA 独立复审无剩余 P0–P2。
-- 最新门禁/回退依赖见 E029，责任见 PREVIEW-READ-LIFECYCLE，下一步见 C1B-ENTRY。
+- 阶段：A0–A3 / B1、B2 与 C1a 已完成；C1b 已修复四项状态接受及 History 提示副作用，最终门禁仍在定位 R35。
+- C1b 当前产品冻结 SHA：`2f64e383cc42776385ec22420d7ec299792bb9c9`，全量启动时 clean。
+- 最新全量为 3314 Mobile PASS / 4 SKIPPED / 1 FAIL（--concurrency=1），不能称为全量通过。
+- analyze 0 error/warning，1017 既有 info 完整文本逐项无新增；该产品固定 SHA 复审无剩余可证明 P0–P2。
+- 当前失败观测与回退见 E034–E036；职责见 DETACHED-CANONICAL-ADMISSION，下一步先看 RUNTIME-ITEM-BOUNDARY。
 - E024 的历史并发折叠等待 FAIL 尚未归属；最终串行 PASS 不证明默认并发或设备/运行链验收。
 - 最新提交与验证身份在后续条目登记；不能从本节推断部署状态。
 
@@ -817,3 +817,36 @@ V2 detached public history 先只读准备、canonical admission，再走原分�
 原 60e0c0dc 的全量 PASS 与复审 P2 均作为中间证据保留；本提交重新冻结完整生产/测试输入，
 全量 Mobile analyze/tests、格式与同一独立 reviewer 的修复复核仍须按新 SHA 执行。
 结构回退须保留 E032 的整体状态 admission 和本条提示修复，不能将准备/应用后确认两端拆开回退。
+
+## E036 — 全量可见性失败与跨层完成信号观测
+
+产品固定 SHA：`2f64e383cc42776385ec22420d7ec299792bb9c9`。
+同一 GPT-6 Luna/max 固定 SHA 复核确认 Git tip P2 关闭、旧调用者语义与 streaming/thinking 对象保留，
+无剩余可证明 P0–P2；独立源码审查不代替运行门禁。
+`c1b-tipfix-final-full-analyze`：exit 0，18.095 秒，0 error/warning、1017 info；
+完整 severity/file/全部诊断正文（含续行，重复计数保留，忽略行列）与 C1a 比对，added/removed 均为空。
+`c1b-tipfix-final-format`：六文件 0 changed，exit 0，0.615 秒。
+
+`c1b-tipfix-final-full-mobile`：3314 PASS / 4 SKIPPED / 1 FAIL，exit 1，343.322 秒。
+唯一 FAIL：原 full-page 的 assistant-live-segment-b 等待一份可见 Second live commentary 超时；
+不是 E024 的 complete intermediate fold 阶段。新十五项 admission/candidate/handler 保护均通过。
+`c1b-tipfix-full-page-replay`：相同 clean 产品输入单独原用例 1 PASS，9.028 秒，不能覆盖全量失败。
+
+root 只给原黑盒增加失败/成功诊断快照，保留输入、断言、等待与原页面；
+`c1b-full-page-observation-group`：三文件五个用例 4 PASS / 1 FAIL，exit 1，26.603 秒。
+SQL 与原 Cubit 已有 A/B 的正确 ID、顺序、hash/正文，页面仍流式累积为 A+B，
+runtime overlay event count=0。两条已提交消息被放入 collapsed intermediate，而 transient 仍在。
+独立只读成功/失败 Bridge trace 对照：B canonical payload 相同，成功先有 runtime_overlay，失败没有。
+结论只缩小到完成信号路径，未确定生成条件/authority/订阅/队列哪个接点导致漏发。
+
+再给原隔离 fixture 增加只读 runtime adapter 观测，另存 runtime-overlay-origin.jsonl，
+原 provider-message 格式不变。没有注入状态或改生产 dispatch，也没有保证观测成本对时序无影响。
+`c1b-full-page-origin-observation`：三个原 full-page 用例 3 PASS，13.004 秒；
+`c1b-origin-observation-group`：三文件五个用例 5 PASS，19.052 秒。
+两次 PASS 都不是行为修复；R35 未关闭。观测测试 analyze：0 issues，exit 0，25.118 秒。
+先前用“四个黑盒”描述不同接收链路的条目不作为精确用例计数；本三文件实际为五个用例。
+
+本 checkpoint 只提交测试/fixture 观测与事实文档，产品源码仍为 2f64e383。
+不会把 runtime 正文改作 canonical writer，也不会用删除断言或延长等待获得通过。
+下一步见 RUNTIME-ITEM-BOUNDARY：先明确产生/发送/丢弃条件并建立确定性 red，再决定行为修复；
+后续 runtime 隔离队列结构批暂不实施。新观测输入按新固定 SHA 另跑最终检查，不继承旧全量绿灯。

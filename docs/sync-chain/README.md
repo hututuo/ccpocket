@@ -30,6 +30,12 @@ Bridge 与依赖输入未变，继承 B2 门禁。完整收据与回退依赖见
 不能据此宣称并发问题已修复。真实 Provider、模拟器/真机、云 CI 与生产部署各自仍为 NOT_RUN；
 原生 UI 自动化因本轮工具不可用为 BLOCKED。源码门禁只证明选定接收闭环。
 
+C1b 当前已修复无效 canonical 仍改变设置/审批/队列/分页，以及解码提前确认 Git tip 的遗漏；
+在原投影模块中分开 canonical 准备、接受与后置 overlay 合成，新增十五项保护。
+产品冻结 `2f64e383` 的最新全量 **3314 PASS / 4 SKIPPED / 1 FAIL**，不能标记整批门禁完成。
+第二条过程消息独立可见性失败已缩小到 runtime 完成信号路径；SQL/Cubit 内容正确，stream 未关闭。
+原失败、后续重放和新增观测分别保留，见 [完成信号定位](RUNTIME-ITEM-BOUNDARY.md) 与 PROCESS E036。
+
 接手顺序：
 
 1. [方案与批次](PLAN.md)：目标、推进门禁与抽取次序。

@@ -16,7 +16,7 @@
 | R09 | 真 Bridge → JSON → Dart → SQLite → Cubit/layout | 与 Provider fixture 的稳定 ID/顺序/内容相符 | PASS 四个黑盒用例含 partial-summary / older-pages 原页面更新；两种漏通知 mutation FAIL 证明敏感；E006/E014/E020 |
 | R10 | stdio JSON-RPC 模式 | 不旁路生产 RPC 解码/分发 | PASS 基线 full-page；E002 |
 | R11 | SQLite 关闭重开 | durable 内容可恢复 | PASS 基线 receiver；E002 |
-| R12 | 全 Mobile analyze/tests | 无新增 error/warning/回归 | PASS C1a 最终源码 151c0475 clean：3300 PASS / 4 SKIPPED，--concurrency=1；analyze 0 error/warning、1017 既有 info 逐项比对无新增；E029，历史 FAIL 保留 |
+| R12 | 全 Mobile analyze/tests | 无新增 error/warning/回归 | FAIL C1b 产品 2f64e383 clean：3314 PASS / 4 SKIPPED / 1 full-page FAIL，--concurrency=1；analyze 0 error/warning、1017 既有 info 完整文本无新增；C1a 的 PASS 历史独立保留；E036 |
 | R13 | 真实 Provider 新事件 | 原始记录与 Bridge/cache/page 对照 | NOT_RUN |
 | R14 | 模拟器 / 真机 / 生产 | 各自独立验收 | NOT_RUN；本轮原生 UI 自动化工具不可用为 BLOCKED，不能用 VM widget host 代替设备验收 |
 | R15 | 调度退避、失败预算、取消计时器、旧回调 | 1/2/4 秒重试、4 次失败封顶；取消后无重试，旧完成不清新 owner | PASS 抽取后四个 scheduler 用例；E007 |
@@ -34,6 +34,12 @@
 | R27 | A-next 提交后切 B，读丢弃，再认证 A 且不重发正文 | 受 source fence 阻止的 dirty 保留并实际补读，显示 SQL 的 A-next | PASS success/error 两个基线 FAIL→fix；八个生命周期含 deferred dirty，最终全量；E027/E028/E029 |
 | R28 | durable 冷读期间 passive runtime 绑定，后续 canonical commit | durable reader 保持有效，冷窗口与后续 commit 均更新同一页面；runtime 不写 canonical | PASS 正向 SQL 页面用例与最终全量；E028/E029 |
 | R29 | full-page 完整中间过程折叠的并发组合时序 | 原页面在实际输入完成后呈现正确 fold/count | FAIL 历史 E024 并发组合等待超时保留，原因未归属；后续单独/串行相关与 E029 全量 PASS；默认并发/云 CI NOT_RUN，继续定位入口 C1B-ENTRY |
+| R30 | duplicate canonical 的整体接受 | 不提前应用设置、审批、queue 与 paging | PASS 原 Cubit 四项稳定 red → green；E031/E032/E035，全量中均通过 |
+| R31 | draft/exact client receipt 与同正文不同身份 | 原 canonical 的合法关联才消费；重放不重复；不消费他人 draft | PASS 原 Cubit/draft 两项正向保护；E031/E035 |
+| R32 | candidate 输入、compose 与证据来源 | 准备输入冻结，compose 不修改；overlay enrich 不产生 canonical receipt | PASS 四项纯 candidate 保护；E033 |
+| R33 | rejected History Git tip | 未显示的 tip 不抑制下一条有效 error；已接受 tip 仍去重 | PASS 原 Cubit 1 red → green + 1 正向，handler 三路径保护；E034/E035 |
+| R34 | 原 handler / shared mirror / SQL reader 兼容 | 普通 History/live tip 保留，原分页/读取/布局契约通过 | PASS 分项收据 447 用例通过但一次命令有错文件加载 FAIL；正确分页文件另 15 PASS，不伪装单次总数；E035 |
+| R35 | 第二条 runtime commentary 的独立可见性 | canonical A/B 已提交时结束对应 transient，B 独立可读 | FAIL 最新全量与观测组合，单独及增加 origin 观测的组合 PASS 均不关闭；SQL/Cubit 正确，stream A+B，缺 runtime overlay；尚未归因，见 RUNTIME-ITEM-BOUNDARY |
 
 R09/R10 的最上游是隔离 Provider fixture，使用真实 Bridge、协议、SQLite 和页面相关代码；
 即使 PASS，也只证明接收闭环，不冒充 R13/R14。

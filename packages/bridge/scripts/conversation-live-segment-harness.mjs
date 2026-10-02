@@ -110,6 +110,7 @@ const rawRpcMode = process.env.CCPOCKET_CHAIN_PROVIDER_MODE === "stdio-json-rpc"
 const rpcTrace = [];
 const providerReads = [];
 const providerMessages = [];
+const runtimeOverlayObservations = [];
 const bridgeFrames = [];
 const clientFrames = [];
 const wireFaults = new ConversationWireFaults((raw) => bridgeFrames.push(raw));
@@ -310,6 +311,18 @@ function createProviderRuntime() {
   const runtime = new CodexProcess();
   runtime.on("message", (message) => {
     providerMessages.push(structuredClone(message));
+    if (message.type === "assistant") {
+      runtimeOverlayObservations.push({
+        at: new Date().toISOString(),
+        assistantId: message.message.id,
+        historyTurnId: message.historyTurnId,
+        processStatus: runtime.status,
+        processActiveTurnId: runtime.activeTurnId,
+        // Read the same adapter facts used by sessionMessage. This records
+        // fixture evidence without supplying authority or changing dispatch.
+        runtimeStates: bridge.localFeatures.listRuntimeConversationStates(),
+      });
+    }
     if (message.type === "system" && message.subtype === "init" && message.sessionId === threadId) {
       activeRuntime = runtime;
     }
@@ -616,6 +629,10 @@ await writeFile(
   providerMessages.length === 0
     ? ""
     : `${providerMessages.map((entry) => JSON.stringify(entry)).join("\n")}\n`,
+);
+await writeFile(
+  join(traceRoot, "runtime-overlay-origin.jsonl"),
+  runtimeOverlayObservations.map((entry) => JSON.stringify(entry)).join("\n") + "\n",
 );
 await Promise.race([
   bridge.close(),
