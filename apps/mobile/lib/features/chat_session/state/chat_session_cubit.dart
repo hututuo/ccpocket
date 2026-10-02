@@ -2174,19 +2174,14 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
     bool? hasEarlier,
   }) {
     if (!detachedPreview || isClosed) return;
-    if (hasEarlier != null && _detachedHistoryPageLoader != null) {
-      localHistoryPaging.value = localHistoryPaging.value.copyWith(
-        enabled: true,
-        hasMore: hasEarlier,
-        loading: false,
-        clearError: true,
-      );
-    }
     // Legacy Bridges do not carry an authoritative-empty/completeness fence.
     // Their empty refresh can mean "history unavailable", so it must not
     // erase the last readable durable window. V2 empty snapshots are staged
     // atomically by SQLite and may authoritatively clear stale rows.
-    if (messages.isEmpty && !_bridge.supportsConversationSyncV2) return;
+    if (messages.isEmpty && !_bridge.supportsConversationSyncV2) {
+      _updateDetachedHistoryPagingAvailability(hasEarlier);
+      return;
+    }
     try {
       final history = HistoryMessage(messages: messages);
       final update = _handler.handle(
@@ -2195,6 +2190,29 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
         isCodex: isCodex,
         ignoredToolUseIds: const {},
       );
+      if (_bridge.supportsConversationSyncV2) {
+        final projection = projectDetachedTimeline(
+          canonicalEntries: update.entriesToAdd
+              .where((entry) => entry is! StreamingChatEntry)
+              .toList(growable: false),
+          outgoingOverlays: const [],
+          runtimeOverlays: const [],
+          exactAliases: _entryExactAliasKeys,
+          mergeEquivalent: _mergeEquivalentEntry,
+        );
+        if (projection.duplicateCanonicalCount > 0) {
+          _detachedProjectionDuplicateCanonicalCount =
+              projection.duplicateCanonicalCount;
+          _detachedProjectionLastAction = 'canonical_rejected_duplicate';
+          logger.warning(
+            '[timeline_projection] event=canonical_rejected_duplicate '
+            'thread=$_projectionThreadToken '
+            'count=${projection.duplicateCanonicalCount}',
+          );
+          return;
+        }
+      }
+      _updateDetachedHistoryPagingAvailability(hasEarlier);
       _applyUpdate(update, history);
       if (state.status == ProcessStatus.starting) {
         emit(state.copyWith(status: ProcessStatus.idle));
@@ -2206,6 +2224,16 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
         stackTrace,
       );
     }
+  }
+
+  void _updateDetachedHistoryPagingAvailability(bool? hasEarlier) {
+    if (hasEarlier == null || _detachedHistoryPageLoader == null) return;
+    localHistoryPaging.value = localHistoryPaging.value.copyWith(
+      enabled: true,
+      hasMore: hasEarlier,
+      loading: false,
+      clearError: true,
+    );
   }
 
   /// Projects the already committed conversation-sync status into a detached

@@ -732,3 +732,18 @@ draft/本地 outgoing ID 在拒绝时保留，合法 exact commit 才消费；�
 本 checkpoint 不是可用候选。修复限定为 V2 detached durable history 的整体接受判断前移，
 在应用分页/设置/交互/投递等状态前判定候选有效；legacy empty 继续保留原语义。
 先独立行为修复，随后才将 prepare/admission 与应用阶段分清，沿用原纯投影 reducer。
+
+## E032 — 候选有效性先于分页与状态应用
+
+父 red checkpoint：`96242441210bdf8d6daeda2321ce44339ae70182`。
+独立 paging red 为 0 PASS / 1 FAIL，exit 1，3.518 秒：原 hasMore=true 被拒绝候选的 false 提前覆盖。
+修复在原 `updateDetachedPreviewHistory` 解码后、`_applyUpdate` 和 paging availability 之前，
+使用已有纯投影的 exact alias 检查；重复 canonical 只记录拒绝诊断并返回。
+legacy empty 仍更新原分页观察并保留 last-good；没有变更 wire、SQL、源身份或 runtime control 入口。
+
+`c1b-admission-green`：305 PASS，exit 0，25.125 秒；包含六个新原 Cubit 用例、
+全部原 Cubit、十三个真实 SQL 页面、durable 与纯投影保护。四个确定性红灯均转绿。
+该提交只作为行为修复 checkpoint；成功候选目前先做 admission、再进入原合并，
+存在临时的两次纯投影计算。下一步在同一既有模块中准备不可变候选，原路径只应用同一结果，
+完整迁移 acceptance 接点，避免另造 reducer/状态总线。设计见 DETACHED-CANONICAL-ADMISSION。
+完整黑盒、全量 Mobile analyze/tests 与固定 SHA 独立复审仍待最终结构实现后执行。
