@@ -302,6 +302,64 @@ void main() {
     expect(visibleErrors(cubit), isEmpty);
   });
 
+  test('authority replacement retires the previous quarantine owner', () async {
+    final cubit = createCubit(active: true);
+    addOverlay(
+      'visible-before-authority',
+      'Old authority warning',
+      at: '2026-10-03T00:00:00.000Z',
+    );
+    await pumpEventQueue();
+    addOverlay(
+      'pending-before-authority',
+      'Old authority pending',
+      turn: 'next-turn',
+      at: '2026-10-03T00:00:02.000Z',
+    );
+    await pumpEventQueue();
+    expectPending(cubit, 1, _wireBytes('Old authority pending'));
+    cubit.updateDetachedProviderStatus(
+      _status(turn: 'next-turn', authority: 'replacement-authority'),
+      sourceFingerprint: _source,
+    );
+    expectPending(cubit, 0, 0);
+    expect(visibleErrors(cubit), isEmpty);
+    addOverlay(
+      'fresh-authority-event',
+      'Replacement authority warning',
+      turn: 'next-turn',
+      authority: 'replacement-authority',
+      at: '2026-10-03T00:00:03.000Z',
+    );
+    await pumpEventQueue();
+    expectPending(cubit, 0, 0);
+    expect(visibleErrors(cubit), ['Replacement authority warning']);
+  });
+
+  test('turn retirement still rejects a pending event proven older', () async {
+    final cubit = createCubit(active: true);
+    addOverlay(
+      'visible-before-terminal',
+      'Retiring warning',
+      at: '2026-10-03T00:00:00.000Z',
+    );
+    await pumpEventQueue();
+    addOverlay(
+      'stale-pending',
+      'Unmatched old payload',
+      turn: 'unmatched-turn',
+      at: '2026-10-03T00:00:00.500Z',
+    );
+    await pumpEventQueue();
+    expectPending(cubit, 1, _wireBytes('Unmatched old payload'));
+    cubit.updateDetachedProviderStatus(
+      _status(activity: 'idle'),
+      sourceFingerprint: _source,
+    );
+    expectPending(cubit, 0, 0);
+    expect(visibleErrors(cubit), isEmpty);
+  });
+
   for (final oldTerminalFirst in [false, true]) {
     test(
       'next turn quarantine survives ${oldTerminalFirst ? 'old terminal then' : 'direct'} turn replacement',

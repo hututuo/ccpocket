@@ -2,8 +2,8 @@
 
 本文件从 C1c `89084bcb` 的队列责任梳理；随后 runtime status 身份已补分项契约，见 PROCESS E052/E053。
 最终全量门禁待候选冻结登记，本文件不是终态候选的完整验收。
-当前已执行第一组公开契约：容量/退休九项PASS，future turn两项行为FAIL（E054）。
-下面候选模块尚未实现，现有两个队列仍由原 Cubit 持有；先在原接点修缺陷。
+当前十三项公开queue契约PASS，future turn两项red已在原接点窄修；原七黑盒PASS（E054/E055）。
+下面候选模块尚未实现，现有两个队列仍由原 Cubit 持有；完整门禁待候选冻结。
 终态修复目前只证明 R37–R42 的分项契约，历史 R29 和 095cab00 全量失败的直接归因仍留未知。
 
 ## 两套队列不能合并
@@ -33,7 +33,7 @@ terminal ticket 只保存 generation/source/inputRevision，用于防止过期�
 | _onDetachedRuntimeOverlay | provider/thread、认证 Bridge/source、runtime/origin、rejected authority、message turn、dedup 的 admission | 不把完整 Cubit/Bridge/Service 传给 queue helper；admission 保留唯一位置 |
 | _quarantineDetachedRuntimeOverlay | insertion order、byte/count rejection 与只读统计 | duplicate ID 不计两次容量；超限不淘汰先前消息；不发送 ACK 或写 SQL |
 | _flushPendingDetachedRuntimeOverlays | 当前匹配 apply；明确 stale 删除；其他仍 pending | 复制队列迭代，remove-before-apply；回调/重入后不保留负 bytes |
-| _resetDetachedRuntimeOverlayTracking | 清 queue/bytes、accepted IDs 与原 tracking | 所有 suspend/source/binding/terminal/close 入口仍调用原出口；不能只迁走 map 留一份 bytes |
+| _resetDetachedRuntimeOverlayTracking | 清 queue/bytes、accepted IDs 与原 tracking | suspend/source/binding/close及authority失效仍清pending；同binding/authority的turn退休只清visible tracking，原flush再判pending；不能只迁走map留一份bytes |
 | _reconcileDetachedRuntimeOverlayForStatus | 分类并清旧 runtime rows / aliases / tracking | 必须在 visual reset 清 alias 前执行；保留未入库 completion 与 canonical 的身份区分 |
 | close | cancel subscriptions、reset overlay tracking 后 Cubit close | 回调检查 isClosed；StreamingStateCubit 的 flush timer 由其自己的 close 退休；不承诺未经验证的同步 join |
 
@@ -54,7 +54,7 @@ visual 同 turn、旧 ID 未知、首次 source 确认、不同 turn、idle 和�
 |---|---|
 | quarantine 32/33、精确 byte 边界、duplicate 的预算占用 | 未验证消息到边界仍隔离；超限不能更改已有正文/顺序/bytes；重复不吃预算 |
 | flush 后 remove/reject/reset 的 byte 退休 | 总 bytes 回到准确值，后续合法事件可使用腾出的容量；不会负数或保留旧 owner |
-| future authority/turn 在旧 terminal 前到达 | 同source/runtime/authority且T2时间不旧时应保留；两项public输入已FAIL，先分开visible退休与pending owner失效。真实Provider双turn仍NOT_RUN |
+| future authority/turn 在旧 terminal 前到达 | 同source/runtime/authority且T2时间不旧时应保留；两项public输入red→窄修green，已分开visible退休与pending owner失效。真实Provider双turn仍NOT_RUN |
 | visual 256/257 overflow、buffered completion/control 副作用 | 先对照 provisional visual 的产品原则；不能照抄现在的 replay 当正确预期 |
 | close 后迟到 observer/raw callback 与未 flush thinking | 原关闭契约仍成立，不能因为 state owner 搬动复活旧输出或产生 side effect |
 | 两个真实 Provider turns、后台/长会话 | 原始 Provider record→wire→SQL→原页面逐层对照；fixture/public 双 lane PASS 不代替 |

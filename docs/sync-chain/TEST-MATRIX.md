@@ -48,8 +48,8 @@
 | R41 | A→B→C，B 状态在 C socket idle 前/后才被投影 | 新清理须核对远端 runtime 身份，不让同源旧缓存退休 C 正文；C 后续合法终态仍结束 | PASS 20项terminal契约及七黑盒；三项red保留，新增身份是新清理必需条件；最终全量/复核待冻结；E052/E053 / RUNTIME-STATUS-IDENTITY |
 | R42 | status runtime 身份的 Bridge 生产 / JSON / SQLite | 来自真实 runtime snapshot；round trip 保留；appServer/失效转换不继承；旧字段缺失可读 | PASS 新producer、JSON及SQLite close/reopen保护、同时间身份签名与Bridge186项回归/新build/原七黑盒；最终全量待冻结；red保留，E052/E053 |
 
-| R43 | quarantine条数/UTF-8预算/去重/失效/close | 32条/64KiB；拒绝新超限，既有FIFO保留；删除/flush/reset退休bytes，迟到不复活 | PASS 九项公开保护；原test层级误读FAIL单独保留，不计产品缺陷；E054 |
-| R44 | T2 event先入隔离队列，随后退休T1显示 | 同source/runtime/authority、时间不旧的T2不被T1退休清空；原flush验证后应用 | FAIL direct T2与先旧terminal两项public契约；新显示owner不能接管旧消息；E054 |
+| R43 | quarantine条数/UTF-8预算/去重/失效/close | 32条/64KiB；拒绝新超限，既有FIFO保留；删除/flush/reset退休bytes，迟到不复活 | PASS 十三项公开queue保护及286项相关回归、原七黑盒；完整门禁待冻结；原test层级误读FAIL单独保留；E054/E055 |
+| R44 | T2 event先入隔离队列，随后退休T1显示 | 同source/runtime/authority、时间不旧的T2不被T1退休清空；原flush验证后应用 | PASS direct T2与先旧terminal两项public契约，原两项red保留；同binding/authority范围，真实双turn NOT_RUN；E054/E055 |
 | R45 | visual pending 256/257策略 | 对照provisional visual原则审定溢出/重放/completion副作用 | NOT_RUN；只登记原现状，暂不迁移此队列；RUNTIME-QUEUE-ENTRY |
 
 R09/R10 的最上游是隔离 Provider fixture，使用真实 Bridge、协议、SQLite 和页面相关代码；

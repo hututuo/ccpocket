@@ -1381,3 +1381,20 @@ T2 event observedAt晚于T1 terminal，不属于已证明过期；没有制造au
 同runtime/generation/authority的turn退休保留pending，随后原flush匹配当前turn或按时间拒绝；
 runtime/source/suspend/close及不匹配authority仍使用原完整清理。先窄修green，再单独迁移queue map/bytes。
 不搬visual pending、不改变256/257策略或两个queue的预算/去重边界。
+
+## E055 — 退休可见turn时不作废下一轮隔离消息
+
+red checkpoint `4b59aee7b6e9b31753a1846ff83514dd499c1816`。
+产品只改原Cubit清理参数：_resetDetachedRuntimeOverlayTracking/_clearDetachedRuntimeOverlay
+默认仍退休pending；在已核对相同generation/runtime/authority后，仅turn退出/替换保留pending，
+随后原flush以当前turn/时间决定apply或reject。没有新增admission、write或控制权。
+补两项反向保护：authority替换仍退休旧pending；turn终态仍删除已证明旧的隔离消息/bytes。
+
+- c1d-runtime-queue-retirement-green：原十一项queue、二十项terminal与原Cubit共284 PASS，14.113秒。
+- 增加反向输入后 c1d-runtime-queue-retirement-boundaries：十三项queue与上述原契约共286 PASS，14.681秒。
+- c1d-runtime-queue-retirement-blackbox：原三文件七黑盒PASS，31.403秒。
+  两次后者输入diff SHA256 `a20692208746a5cdec4f525143ed3b900026737df39dda6fa083a7c671f236b4`。
+
+源/重绑/suspend/close、authority失效与visible trim保持原完整清理；两项future turn red转green。
+当前只关闭选定同authority的公开契约，future authority/真实两轮Provider仍没有被这些fixture证明。
+结构迁移另提交：RuntimeOverlayQuarantine独占map/bytes，原Cubit保留所有envelope/time/control/reconcile/apply。

@@ -2889,8 +2889,8 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
       .where((entry) => !_isDetachedRuntimeOverlayEntry(entry))
       .toList(growable: false);
 
-  void _resetDetachedRuntimeOverlayTracking() {
-    _clearPendingDetachedRuntimeOverlays();
+  void _resetDetachedRuntimeOverlayTracking({bool preservePending = false}) {
+    if (!preservePending) _clearPendingDetachedRuntimeOverlays();
     _detachedRuntimeOverlayGeneration = null;
     _detachedRuntimeOverlayOriginGeneration = null;
     _detachedRuntimeOverlayTurnId = null;
@@ -2899,10 +2899,10 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
     _detachedRuntimeOverlayEventIds.clear();
   }
 
-  void _clearDetachedRuntimeOverlay() {
+  void _clearDetachedRuntimeOverlay({bool preservePending = false}) {
     final filtered = _withoutDetachedRuntimeOverlayEntries(state.entries);
     _detachedRuntimeAssistantAliases.clear();
-    _resetDetachedRuntimeOverlayTracking();
+    _resetDetachedRuntimeOverlayTracking(preservePending: preservePending);
     if (filtered.length != state.entries.length) {
       emit(state.copyWith(entries: filtered));
     }
@@ -2938,12 +2938,15 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
       return;
     }
     if (!active || activeTurnId?.isNotEmpty != true) {
-      _clearDetachedRuntimeOverlay();
+      // Only the displayed turn is retiring. A newer same-binding event can
+      // already be quarantined behind the separate status observer; let the
+      // normal flush decide its turn/time eligibility.
+      _clearDetachedRuntimeOverlay(preservePending: true);
       return;
     }
     final overlayTurnId = _detachedRuntimeOverlayTurnId;
     if (overlayTurnId?.isNotEmpty != true || overlayTurnId != activeTurnId) {
-      _clearDetachedRuntimeOverlay();
+      _clearDetachedRuntimeOverlay(preservePending: true);
     }
   }
 
