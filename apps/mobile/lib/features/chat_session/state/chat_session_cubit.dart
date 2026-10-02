@@ -275,6 +275,8 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
   String? _detachedPreservedVisualTurnId;
   bool _detachedVisualTurnValidationPending = false;
   final List<ServerMessage> _detachedPendingVisualMessages = [];
+  ({int runtimeGeneration, String? sourceFingerprint, int streamRevision})?
+  _detachedTerminalVisualTicket;
   String? _detachedRejectedAuthorityGeneration;
   bool _detachedProviderProjectionCurrent = false;
   final ValueNotifier<int> detachedLiveRuntimeRevision = ValueNotifier(0);
@@ -2145,6 +2147,7 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
   }
 
   void _resetDetachedVisualTimelineInternals() {
+    _detachedTerminalVisualTicket = null;
     _handler.currentStreaming = null;
     _streamingCubit.reset();
     _desktopContinuityHandlers.clear();
@@ -2165,6 +2168,14 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
     if (durableEntries.length != state.entries.length) {
       emit(state.copyWith(entries: durableEntries));
     }
+  }
+
+  bool get _hasUnchangedDetachedTerminalVisualTicket {
+    final ticket = _detachedTerminalVisualTicket;
+    return ticket != null &&
+        ticket.runtimeGeneration == _detachedLiveRuntimeGeneration &&
+        ticket.sourceFingerprint == _detachedProviderSourceFingerprint &&
+        ticket.streamRevision == _streamingCubit.inputRevision;
   }
 
   /// Reconciles a newer durable cache snapshot without recreating the screen
@@ -2376,11 +2387,12 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
         authorityGeneration: authorityGeneration,
       );
       if (nextStatus == ProcessStatus.idle &&
-          _detachedActiveTurnId?.trim().isNotEmpty == true) {
+          _detachedActiveTurnId?.trim().isNotEmpty == true &&
+          _hasUnchangedDetachedTerminalVisualTicket) {
         // Status and item completion travel through separate observers. A
-        // terminal projection retires a previously confirmed active turn.
-        // Bootstrap idle can lag new socket deltas before turn confirmation;
-        // it does not establish that their current turn has completed.
+        // terminal projection retires a previously confirmed active turn
+        // only if no delta followed its socket idle boundary. A delayed
+        // status must not erase output already started by the next turn.
         _clearDetachedVisualTimeline();
       } else {
         _validateDetachedVisualTurn(
@@ -4870,6 +4882,18 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
       // owns the durable thread. Its local status must not erase the external
       // running state that the rollout monitor has already established.
       return;
+    }
+    if (detachedPreview &&
+        isCodex &&
+        msg is StatusMessage &&
+        msg.status == ProcessStatus.idle) {
+      // This is an ordering guard, not provider or control authority. The
+      // committed status still decides whether the known turn is terminal.
+      _detachedTerminalVisualTicket = (
+        runtimeGeneration: _detachedLiveRuntimeGeneration,
+        sourceFingerprint: _detachedProviderSourceFingerprint,
+        streamRevision: _streamingCubit.inputRevision,
+      );
     }
     if (msg is SystemMessage &&
         msg.subtype == 'set_permission_mode' &&

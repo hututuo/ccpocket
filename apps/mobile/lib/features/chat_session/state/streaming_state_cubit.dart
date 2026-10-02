@@ -32,6 +32,11 @@ class StreamingStateCubit extends Cubit<StreamingState> {
   Timer? _flushTimer;
   StringBuffer _pendingText = StringBuffer();
   StringBuffer _pendingThinking = StringBuffer();
+  int _inputRevision = 0;
+
+  /// Changes when input is accepted, including deltas awaiting a flush.
+  /// A reset invalidates prior observations without waiting for publication.
+  int get inputRevision => _inputRevision;
 
   Duration get _effectiveCoalesceInterval {
     final length = state.text.length + state.thinking.length;
@@ -49,6 +54,7 @@ class StreamingStateCubit extends Cubit<StreamingState> {
   }
 
   void _append({String text = '', String thinking = ''}) {
+    _inputRevision += 1;
     if (coalesceInterval <= Duration.zero) {
       _emitAppended(text: text, thinking: thinking);
       return;
@@ -96,6 +102,7 @@ class StreamingStateCubit extends Cubit<StreamingState> {
   }
 
   void reset() {
+    _inputRevision += 1;
     _flushTimer?.cancel();
     _flushTimer = null;
     _pendingText = StringBuffer();

@@ -1190,3 +1190,33 @@ reset 使旧标记失效；原 Cubit 只在 socket idle 接点记录有界 termi
 只有 ticket 未被后续增量/重绑/source/reset 改变才取得新增清流资格。
 ticket 是防止过期清理的证据，不取得任何 canonical、控制或订阅权；无 ticket/无 turn 保持原完成/validate。
 行为修改与新输入分开提交；随后固定源跑全量与独立 review，继续保留历史 R29 未知。
+
+## E048 — 终态清理绑定未变化的 socket 输出
+
+父 red：`9ffd89845c9a693f1200212d9e4fa550581e0ff1`。产品范围为原 Cubit 与 StreamingStateCubit。
+StreamingStateCubit 独占 inputRevision，text/thinking 在 append 接受时推进，包含尚未 flush 的增量；
+reset 也推进。不另存流正文、不更改发布节奏或公开 StreamingState。
+原 Cubit 在经过既有 external desktop guard 的 socket idle 接点记一份有界 ticket：
+runtime generation、source fingerprint、stream revision。后续 committed idle 仍先通过原所有身份、
+authority、时间和重复检查；先按 alias 过滤 runtime overlay，再核对已确认 activeTurnId 与未变化 ticket。
+较新增量、reset、source 或 binding 变化使旧清理失效；ordinary idle 只提供顺序条件，不取得 Provider 权威。
+缺少 ticket/turn 的路径仍用原 completion/visual validation，不扩张无 ID 终态的保证。
+
+本轮失败也保留：首次 patch 把 capture 插到相似的 `_setExternalDesktopRunning` 接点，msg 未定义。
+`c1c-terminal-ticket-unit-green` 实为编译 FAIL（1.751 秒）；其后误启动的
+`c1c-terminal-ticket-blackbox-green` 也是三文件加载 FAIL（7.014 秒）。名称 green 不代表结果。
+修正到 `_onMessage` 后，`c1c-terminal-ticket-corrected-unit-green` 为 10 PASS / 1 行为 FAIL，2.321 秒：
+bootstrap 测试的后续正向终态缺真实 socket idle。补该接点与 pump，保留原结束输出断言；
+前段未确认 turn 的新输出保留断言未改。未改 receiver/page 的等待或断言。
+
+固定父输入加上述三文件 diff（SHA256 `4103b5ef0f8693492a26d214a2b4c2826cfeac28400b22feebeeff21d7200953`）：
+
+| 收据 | 实际结果 | 退出码 / 时长 |
+|---|---|---|
+| c1c-terminal-ticket-socket-unit-green | 11 项 public 契约 PASS，含下一轮 raw delta、50ms 内未发布 delta 与下次正常终态 | 0 / 1.964 秒 |
+| c1c-terminal-ticket-corrected-blackbox-green | 原三文件七项真实 Bridge→SQLite→页面/receiver PASS；原 receiver 源码未改 | 0 / 32.198 秒 |
+
+本记录与产品一起冻结后，运行完整 Mobile、analyze、格式与固定 SHA 独立复核。
+这仍不是两轮真实 Provider/设备验收，也不证明每一种 pending runtime overlay 交错。
+队列职责与容量、取消、未来 authority 的契约在下一份入口文档梳理；不趁此修复直接迁移队列。
+E044/E046 的较宽清理方案及全量 FAIL 均保留，历史 R29 仍未归因。

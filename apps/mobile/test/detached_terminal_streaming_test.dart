@@ -233,6 +233,11 @@ void main() {
         sourceFingerprint: _source,
       );
       expect(streaming.state.isStreaming, isTrue);
+      bridge.emitMessage(
+        const StatusMessage(status: ProcessStatus.idle),
+        sessionId: _runtime,
+      );
+      await pumpEventQueue();
       cubit.updateDetachedProviderStatus(
         _status(activity: 'idle', observedAt: '2026-10-02T11:00:04.000Z'),
         sourceFingerprint: _source,
