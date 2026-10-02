@@ -26,18 +26,21 @@ C1a 已完成页面异步缓存重读的生命周期抽取。最终源码
 Bridge 与依赖输入未变，继承 B2 门禁。完整收据与回退依赖见 PROCESS 的 E029，
 责任见 [读取生命周期](PREVIEW-READ-LIFECYCLE.md)，下一批见 [C1b 入口](C1B-ENTRY.md)。
 
-一次早期并发组合的 full-page 折叠等待超时仍保留为未归属观察；后续单独与串行重放通过，
-不能据此宣称并发问题已修复。真实 Provider、模拟器/真机、云 CI 与生产部署各自仍为 NOT_RUN；
+一次早期并发组合的 full-page 折叠等待超时仍保留为未归属观察；当前同四文件组合默认并发
+50 PASS，也未形成该旧问题的因果证明。真实 Provider、模拟器/真机、云 CI 与生产部署各自仍为 NOT_RUN；
 原生 UI 自动化因本轮工具不可用为 BLOCKED。源码门禁只证明选定接收闭环。
 
-C1b 当前已修复无效 canonical 仍改变设置/审批/队列/分页，以及解码提前确认 Git tip 的遗漏；
+C1b 已修复无效 canonical 仍改变设置/审批/队列/分页，以及解码提前确认 Git tip 的遗漏；
 在原投影模块中分开 canonical 准备、接受与后置 overlay 合成，新增十五项保护。
-产品冻结 `2f64e383`，加入观测后的固定输入 `d0f164e5` 全量为 **3315 PASS / 4 SKIPPED**；
-Bridge **2546 PASS / 1 SKIPPED**，build/typecheck、格式、完整诊断基线比对及独立复核通过。
-canonical admission 的源码门禁完成，收据见 PROCESS E037。
-之前两次第二条过程消息可见性 FAIL 仍未关闭：SQL/Cubit 内容正确，stream 未关闭；
-失败订阅没有携带焦点，成功订阅带焦点。下一步证明订阅等待确认期间的焦点竞态，
-不能以这次观测输入 PASS 宣称完成信号已修复。见 [完成信号定位](RUNTIME-ITEM-BOUNDARY.md)。
+随后确定性证明并修复 R35：subscribe 发出后、接受前变化的焦点没有发到 Bridge，
+导致 runtime 完成信号漏发、两条过程消息粘连。原 Service 在匹配接受时只补发最新焦点，
+保留原协议、授权与写入路径；新增十七项 V1/V2 保护及一个原页面交错场景。
+旧 Service 在相同原页面输入 FAIL，修复版 PASS；原断言和全部期限保持不变。
+产品冻结 `ce51e280`，完整测试/fixture 输入 `adf337ea` 全量为 **3333 PASS / 4 SKIPPED**；
+Bridge **2546 PASS / 1 SKIPPED**，build/typecheck、格式、1017 条既有诊断完整比对及两项独立复核通过。
+最终门禁见 PROCESS E041；R35 选定交错已关闭，旧 FAIL 与恢复收据保留。
+完成信号责任见 [运行与焦点边界](RUNTIME-ITEM-BOUNDARY.md)；
+下一批先按 [R29 折叠等待入口](R29-FOLD-ENTRY.md) 定位旧观察，再评估 runtime 状态抽取。
 
 接手顺序：
 
@@ -48,7 +51,8 @@ canonical admission 的源码门禁完成，收据见 PROCESS E037。
 5. [接手与验证操作](RUNBOOK.md)：责任边界、重跑命令、回退与下批入口。
 6. [C1a 范围与契约](C1-ENTRY.md)、[读取生命周期](PREVIEW-READ-LIFECYCLE.md)：已完成的读取接缝。
 7. [C1b 入口](C1B-ENTRY.md)、[历史接受职责](DETACHED-CANONICAL-ADMISSION.md)：已实现接缝与回退依赖。
-8. [完成信号定位](RUNTIME-ITEM-BOUNDARY.md)：当前 R35 事实、待证明竞态与后续执行边界。
+8. [运行与焦点边界](RUNTIME-ITEM-BOUNDARY.md)：R35 根因、焦点快照所有权与回退保护。
+9. [R29 折叠等待入口](R29-FOLD-ENTRY.md)：保留失败、当前重放、缺少证据和下批执行顺序。
 
 过程记录不得以旧证据覆盖新失败。源码测试通过、真实 Provider、模拟器、真机、部署和发布分别报告。
 这组文档与对应代码一同提交；原始测试输出保存为独立文件，账本记录命令、身份、结果和证据路径。

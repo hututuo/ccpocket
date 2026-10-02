@@ -1,8 +1,10 @@
 # Runtime 完成信号与可见过程消息
 
 状态：R35 已定位并窄修：旧 Service 在固定原页面交错下重现同一 B 可见性 FAIL，
-修复 Service 同输入 PASS；十七项焦点/兼容保护通过。最终新输入门禁另记，尚不据此整体验收运行链。
-最新证据见 PROCESS E036–E040；观测输入 d0f164e5 的旧全量 PASS 本身不是行为修复。
+修复 Service 同输入 PASS；十七项焦点/兼容保护通过。
+最终产品 `ce51e280` / 测试输入 `adf337ea` 的 Mobile 3333 PASS / 4 SKIPPED，
+Bridge 2546 PASS / 1 SKIPPED、静态门禁与独立复核通过；尚不据此整体验收运行链。
+最新证据见 PROCESS E036–E042；观测输入 d0f164e5 的旧全量 PASS 本身不是行为修复。
 
 V2 detached 中，canonical history 来自 Service → SQLite → 原页面/Cubit。
 实时 delta 留在 handler/StreamingStateCubit；assistant item 完成经带 source、runtime、
@@ -27,7 +29,7 @@ authority、turn 的 runtime_overlay 关闭流式累积，并按 exact identity 
 ## 已确定的 owning path 缺陷
 
 V2 subscribe 与 V1 content subscribe 均在实际发送时取一次 `_focused`。
-发送后，setFocusedConversation 在 active ID 尚空时只更新本地意图；pending ID 令 ensureSubscribed 返回。
+修复前，发送后 setFocusedConversation 在 active ID 尚空时只更新本地意图；pending ID 令 ensureSubscribed 返回。
 syncBegin/subscribed 接受时没有补发，因此本地 diagnostic 与 wire focus 可长期不一致。
 发送前变化、返回首帧焦点、普通 active/dedup 与 dispose 的正向保护通过；
 发送后的设置/清除/替换订阅/send-error 保护失败。范围与回退见 E038–E040 / R36。
@@ -44,10 +46,31 @@ Bridge authority/focus fence 与 V2 durable writer 均保留。
 两个输入都 hold/release 七帧，按 subscription/sequence/sha256 核对字节与顺序完全相同。
 source swap 备份与 finally 恢复另留收据，修复 Service 已与 ce51e280 一致。
 恢复后的三个黑盒文件共六项 PASS；这关闭了选定 pending window 的行为因果。
-最终全量与独立复核仍按新的 clean 输入执行。
+新的 clean 输入已通过全量；产品与 fixture 分别独立只读复核，无剩余可证明 P0–P2。
+原完整页面外层在修改前后均为 120 秒，partial/older 场景为 60 秒，页面等待均为 15 秒。
+没有通过延长等待获得 green。敏感性和最终门禁收据分开，不能把 dirty source swap 当 clean 输入。
 
-R35 与旧 R29 的“完整中间过程折叠等待”是不同失败阶段；没有证据证明两者同因。
+R35 与旧 R29 的“完整中间过程折叠等待”是不同失败阶段；旧 R29 订阅已有焦点，
+wire 有 A/B/final 三个 runtime_overlay，没有证据证明两者同因。
 也没有证据将 R35 归因于 Git tip 修复、机器负载或测试随机性。
+
+## 焦点快照的唯一所有者与完整接点
+
+快照只属于原 SyncService，不新增 lifecycle/reducer，也不持有页面或 Repository。
+
+| 接点 | 必须保留的行为 |
+|---|---|
+| V1/V2 subscribe 实际发送 | 保存与 payload 同一份 focus，绑定 generation/request/target/Bridge/source/协议 |
+| pending 期间 set/clear/切换 | 只更新原本地意图；最新值包含 null，不累计待发送列表 |
+| 当前 subscribed/syncBegin 接受 | 在首次 await 前消费匹配快照；不同才用原消息补发，原焦点不重复 |
+| 旧请求/来源/代次的回复 | 原 fence 拒绝，不消费当前快照；V1 无 pending request 的 late subscribed 忽略 |
+| stop/transport loss/dispose、发送/读取/V1 订阅错误 | 退休快照，不令旧意图接管新订阅 |
+| focus 补发错误 | 走原 transport loss，早退，不继续 bootstrap SQL/notify/ACK；重试仍携带当前意图 |
+| 原 active focus/manual refresh/readmark/自动修复 | 保持原 owner 与流程，不借焦点补发改变 canonical writer |
+
+改任一接点时先跑 `subscription_focus_admission_test.dart` 的十七项，
+再跑原 Service、scheduler、paging、durable/canonical 与六个黑盒；命令见 RUNBOOK。
+回退必须保留这些保护，不能仅删 snapshot 字段或接受 hook 来取得编译通过。
 
 ## 本批新增观测
 
@@ -65,9 +88,10 @@ origin 快照能佐证输入，不能单独证明资格门通过。独立只读�
 
 ## 下一步与停止扩大范围的条件
 
-1. 完成 fixed SHA 的全量与 fixture 独立复审；保留全部旧 FAIL。
+1. E041 的 fixed SHA 全量及两项独立复审已完成；保留全部旧 FAIL、source-swap 恢复与最终收据。
 2. 后续若出现不同条件的漏完成信号，保留 source/runtime/authority/turn、wire focus 与 SQL/UI 快照，
    分别核对 sessionMessage 资格、authority sequencing、队列容量与丢弃，不自动套用本次归因。
-3. 旧 R29 complete-fold 并发等待另定位；真实 Provider/设备/后台/长会话仍单独建立证据。
+3. 旧 R29 complete-fold 按 [独立入口](R29-FOLD-ENTRY.md) 定位；当前默认并发四文件 50 PASS，原因仍未归属。
+   真实 Provider/设备/后台/长会话仍单独建立证据。
 4. 后续 runtime 隔离队列结构抽取只在所属窗口结果与取消责任证明后评估；
    不放宽 fence、不接受普通正文为 canonical writer、不延长等待或删除断言。

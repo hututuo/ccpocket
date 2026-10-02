@@ -1,7 +1,11 @@
 # V2 detached canonical 候选的准备与接受
 
 范围为 C1b，起点/红灯/行为修复见 PROCESS E030–E032，结构实现见 E033，
-History 解码提示副作用的独立复审与修复见 E034–E035，最终门禁另记。
+History 解码提示副作用的独立复审与修复见 E034–E035，最终门禁见 E041。
+canonical 行为源码仍与 `2f64e383` 一致；本批最终产品 `ce51e280` 另含 Service 焦点窄修，
+测试/fixture 输入固定 `adf337ea`：Mobile 3333 PASS / 4 SKIPPED，无新增诊断。
+十五项 canonical/handler 保护和十七项焦点保护属于不同责任；焦点快照仍在 Service，
+不向纯 candidate 添加 generation、subscription 或 transport 状态。
 
 | 责任 | 唯一归属 |
 |---|---|

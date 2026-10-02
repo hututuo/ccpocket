@@ -9,13 +9,14 @@
 | Bridge Provider 转换 | codex-process.ts / local-features/codex-thread-history.ts | 原始 DTO → normalized 稳定身份、顺序、内容 | 不用正文/时间/位置造身份；工具与所属轮次正确 |
 | Bridge 同步 | local-features/conversation-sync-v2.ts | 订阅/快照/patch/分页/Gap；带 source、subscription、sequence | 合法帧有界，partial 诚实，恢复与回补有终态 |
 | Mobile 接收 | services/bridge_service.dart；models/local_features/slots/conversation_sync_v2_protocol_slot.dart | WebSocket JSON → 类型事件；错误分类和诊断 | 合法输入不误拒绝，非法输入明确拒绝，解析失败不静默消失 |
+| 订阅焦点意图 | SyncService._rememberSubscriptionFocusAtSend / _reconcileSubscriptionFocus / _sendFocusedConversation | 实际 subscribe 焦点快照 → 当前匹配接受时最新焦点；V1/V2 原消息 | 快照与 payload 一致；不同才补发；旧接受/来源/dispose 不消费新意图；失败不继续 bootstrap/ACK |
 | Mobile 入站顺序 | features/conversation_content_sync/conversation_content_sync_service.dart | 校验 identity/generation/subscription，再串行提交 | 旧源/旧代响应不生效；序列洞转恢复；事务后 ACK |
 | SQLite | features/session_list/cache/session_catalog_cache_repository.dart | staging → hot window；受 revision/identity/预算约束 | 原子提交；partial 保留 last-good；完整性不误报 |
 | 缓存通知 | SyncService._publishCacheUpdate / syncUpdates | 本地 commit epoch 与数据变化事件 | 有效内容/coverage 变化可被观察；不改 Provider revision |
 | 页面重读 | codex_session_screen.dart._loadDurablePreview / durable_preview_read_lifecycle.dart | 原 updates/SQL window；helper 只拥有 ticket/dirty/失效 | 新内容到达页面；旧读/错误/finally 不影响新目标；受阻补读可恢复 |
 | 历史准备与接受 | handler.prepareHistory / prepareDetachedCanonicalHistory / 原 Cubit | 无副作用解码与不可变 canonical 候选；拒绝保留 last-good | duplicate 拒绝先于设置/审批/queue/paging；receipt 仅来自原 canonical |
 | 展示投影与后置确认 | candidate.compose / 原 Cubit / handler.commitPreparedHistory / layout | 当前合法 overlay 与已接受 canonical；提示在实际应用后确认 | 无重复、工具归属正确；拒绝不消费提示/receipt/alias |
-| runtime item 完成 | Bridge.sessionMessage → focused runtime_overlay → Service → Cubit 原 streaming handler | 独立 source/runtime/authority/turn 与 item 事实；不写 SQL | 订阅实际焦点与客户端意图一致，完成事件能关闭对应 transient；R35 待证明 |
+| runtime item 完成 | Bridge.sessionMessage → focused runtime_overlay → Service → Cubit 原 streaming handler | 独立 source/runtime/authority/turn 与 item 事实；不写 SQL | 对应 transient 关闭；R35 pending-focus 交错 PASS，其他交错/R29 各自证明 |
 
 ## 不同状态不能互相替代
 
@@ -96,10 +97,15 @@ duplicate 候选在原 Cubit 的 public durable history 入口整体拒绝，设
 
 普通 handler History/live 与 `projectDetachedTimeline` API 保持入口兼容；
 SQLite、通知、C1a reader 与 shared weaving 仍属于原 owner。
-canonical admission 的保护与源码门禁见 R30–R34 / E037。
-R35 是另一条 runtime 完成信号路径：两次失败订阅没有 focused，客户端诊断却已有焦点，
-缺少 runtime_overlay 时 canonical A/B 可以正确落库但仍被合并进 transient。
-订阅发送与接受之间是否遗漏焦点补发须用可控顺序证明；不能放宽 Bridge 焦点/authority fence。
+canonical admission 的保护与最终源码门禁见 R30–R34 / E041。
+R35 是另一条 runtime 完成信号路径：发送后、接受前的焦点变化只留在本地，Bridge 实际订阅无焦点，
+canonical A/B 可以正确落库但缺少 runtime_overlay，仍合并进 transient。
+Service 保存一份带 generation/request/target/Bridge/source/协议的实际发送快照；
+匹配 V1 subscribed / V2 syncBegin 后、首次 await 前只补发不同的最新焦点（含 null）。
+快照在接受或原失效出口退休，不是第二套调度器，也不拥有数据库、canonical 或页面状态。
+Bridge 焦点/authority fence 保持原规则。十七项契约与原页面旧 red / 新 green 见 R35/R36。
+R29 旧失败的 subscribe 已有焦点，wire 有 A/B/final 三个完成事件；不能套用 R35 根因，
+后续接受与折叠判断的缺口见 [R29-FOLD-ENTRY](R29-FOLD-ENTRY.md)。
 
 ```mermaid
 flowchart LR

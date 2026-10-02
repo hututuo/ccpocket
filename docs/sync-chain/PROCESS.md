@@ -5,14 +5,15 @@
 - 时间：2026-10-02（Asia/Shanghai；此前条目保留当时记录）。
 - 分支：`codex/sync-chain-extraction-20261001`。
 - 起始 SHA：`930f1267e949c6cf2095761cc71c43cca08c6dc3`。
-- 阶段：A0–A3 / B1、B2 与 C1a 已完成；C1b canonical admission 源码门禁完成，R35 完成信号仍在定位。
-- 上个完整门禁产品 SHA：`2f64e383cc42776385ec22420d7ec299792bb9c9`，全量启动时 clean；当前焦点修复另见 E039。
-- 最新固定测试/fixture 输入：`d0f164e54fd3c076c3940f21a75e05f1e2a00792`，门禁启动时 clean。
-- 最新全量 Mobile 3315 PASS / 4 SKIPPED（--concurrency=1），Bridge 2546 PASS / 1 SKIPPED；build/typecheck/格式通过。
-- analyze 0 error/warning，1017 既有 info 完整文本逐项无新增；该产品固定 SHA 复审无剩余可证明 P0–P2。
-- 此前产品全量与观测组合两次 R35 FAIL 未关闭，最新 PASS 不表示该问题已修复。
-- 当前证据与回退见 E034–E040；pending focus 缺陷与 R35 相同原页面症状已确定性 red → green，最终新输入门禁仍待完成。
-- E024 的历史并发折叠等待 FAIL 尚未归属；最终串行 PASS 不证明默认并发或设备/运行链验收。
+- 阶段：A0–A3 / B1、B2、C1a 与 C1b 选定接缝已完成源码门禁；下一批先定位 R29，再评估 runtime 抽取。
+- 最新完整门禁产品 SHA：`ce51e28027087e5fe4d4d79533390203ae3735a8`，canonical 与焦点行为分开提交。
+- 最新固定测试/fixture 输入：`adf337ea5f2ddddf3639da4e37b020435033b1d1`，全部门禁启动时 clean。
+- 最新全量 Mobile 3333 PASS / 4 SKIPPED（--concurrency=1），Bridge 2546 PASS / 1 SKIPPED；build/typecheck/格式通过。
+- analyze 0 error/warning，1017 既有 info 完整文本逐项无新增；产品/fixture 固定 SHA 独立复核无剩余可证明 P0–P2。
+- R35 pending focus 缺陷已确定性旧 Service red → 窄修 → 相同原页面 green，关闭选定交错；旧两次 FAIL 与恢复收据保留。
+- 当前证据、提交索引与回退见 E038–E042；此后文档提交不改变产品或测试身份。
+- E024 的历史并发折叠等待 FAIL 尚未归属；当前同四文件默认并发 50 PASS，不能据此关闭旧失败或宣称设备/运行链验收。
+- 真实 Provider、模拟器/真机、生产 Bridge、云 CI、OTA/发布 NOT_RUN；原生 UI 自动化工具缺失为 BLOCKED。
 - 最新提交与验证身份在后续条目登记；不能从本节推断部署状态。
 
 ## E001 — 建立隔离执行与文档
@@ -975,3 +976,78 @@ Mobile/Bridge 全量、诊断比对、格式与观测 fixture 的独立 review�
 R35 在此选定窗口有确定性 red/green 因果，真实 Provider/设备与其他运行交错仍不借用该结论。
 旧 R29 的并发 complete-fold 等待仍未归属，不把它与 R35 合并关闭。
 回退 Service 行为保留十七项回归与 held-page red；回退 fixture 不能移除原五个黑盒/断言。
+
+## E041 — 焦点修复与完整输入的最终源码门禁
+
+产品冻结 `ce51e28027087e5fe4d4d79533390203ae3735a8`；
+测试/fixture 输入固定 `adf337ea5f2ddddf3639da4e37b020435033b1d1`。
+以下所有检查启动时 HEAD 为 adf337ea、status 为空、tracked diff SHA256 为 empty hash。
+原始 JSON/log 在 `/Users/developer/AI agent/Codex/_tmp/ccpocket-sync-chain-20261001/`，旧失败未覆盖。
+
+| 收据 label | 结果 | 退出码 / 时长 |
+|---|---|---|
+| c1b-focus-final-bridge-build | Bridge build PASS；仅隔离 checkout 的 dist | 0 / 4.140 秒 |
+| c1b-focus-final-full-mobile | 3333 PASS / 4 SKIPPED，--concurrency=1；十五项 canonical、十七项焦点及六个黑盒均通过 | 0 / 329.085 秒 |
+| c1b-focus-final-full-bridge | 2546 PASS / 1 SKIPPED，124 files PASS / 1 SKIPPED | 0 / 18.925 秒 |
+| c1b-focus-final-full-analyze | 0 error/warning，1017 info；完整正文/续行/重复计数与 C1a 基线一致 | 0 / 21.175 秒 |
+| c1b-focus-final-format | 本批九个 Dart 文件，0 changed | 0 / 0.674 秒 |
+| c1b-focus-final-bridge-typecheck | noEmit PASS，Bridge 全量完成后执行 | 0 / 3.065 秒 |
+
+`c1b-focus-final-analysis-comparison.json`：added/removed 均为空，保留完整文本而非只比诊断代号。
+全量 trace 中普通/held 两个完整页面场景均从 A/B/final、fold 到离开返回、重开/重连、旧订阅、
+乱序/丢帧恢复与真实 RPC 断言 PASS；held 场景另记录 pending 焦点和唯一补发。
+Bridge 全量与 typecheck 使用显式 Node 22.23.1；build 的宿主 Node 26.4.0 / npm 11.17.0。
+Flutter/Dart 身份与 RUNBOOK 一致；不将本机混合工具链声称为 Linux CI 验收。
+
+独立原生 GPT-6 Luna/max 只读复核分别固定：
+
+- b95f7352..ce51e280：唯一产品文件 Service 与十七项新契约，未发现可证明 P0–P2。
+  快照与 subscribe payload、首次 await 前补发、当前身份/协议 fence、失效和发送错误出口均一致。
+  原 active focus、manual refresh、readmark 与 repair 保留。SQL 未开始由 early-return 顺序支持；
+  send-error 测试直接证明 transport 清理与无 ACK，没有额外 SQL spy。
+- ce51e280..adf337ea：三处 fixture/原页面测试，无可证明 P0–P2。
+  检查真实 client 前置条件、同订阅 raw FIFO、128 帧显式上限、普通故障控制与全部原断言。
+  Flutter 用例本身没有 SHA 对照；root 已在 E040 外部 trace 对照证明七帧原字节/顺序。
+  原完整页面外层修改前后均 120 秒，partial/older 均 60 秒，内部等待均 15 秒，无期限变更。
+
+独立结果分别保存 `c1b-independent-review-ce51e280.json`、
+`c1b-independent-review-adf337ea-fixture.json`；复核者未运行测试/服务或修改文件。
+root 核对语义 diff、固定身份与实际完整收据，负责最终集成与质量判断。
+R35 只关闭已证明的 pending focus 交错，不扩大为所有完成信号正确；R29 独立保留。
+真实 Provider/模拟器/真机/生产部署/云 CI/OTA/发布 NOT_RUN，原生 UI 自动化无可调用工具为 BLOCKED。
+
+### 本轮提交索引与回退关系
+
+| 账本 | 提交 | 用途 / 回退约束 |
+|---|---|---|
+| E037 | 5c438e5f05a8727e8a2a1db55e6134939d90689c | 前 canonical/观测输入门禁文档，非 R35 行为修复 |
+| E038 | b95f735205da0ad8571b3db710a67c8a14baf4e1 | 焦点 red checkpoint，产品未改；不作运行候选 |
+| E039 | ce51e28027087e5fe4d4d79533390203ae3735a8 | Service 窄行为修复与十七项保护；回退保留 red 敏感性 |
+| E040 | adf337ea5f2ddddf3639da4e37b020435033b1d1 | held 原页面/fixture；普通五用例及全部期限保留 |
+
+canonical 的 E032 admission 与 E035 提示确认不得随焦点回退丢弃，candidate 结构依赖仍按前文处理。
+实际 revert 先核对工作树，在隔离 checkout 适配并重跑；不操作共享分支或运行服务。
+E041/E042 随后仅更新接手文档；最终文档 HEAD、clean 状态及与 adf337ea 非文档输入一致性
+另保存在 `c1b-focus-final-acceptance.json`，不改写此前 `c1b-final-acceptance.json`。
+
+## E042 — R29 旧证据清点与当前默认并发有限重放
+
+旧 E024 收据 `c1-source-error-fence-green`：HEAD 5d69872d、未提交 source-error fence 输入，
+四文件默认并发组合 41 PASS / 1 FAIL，exit 1，28.092 秒。
+旧单独 `c1-error-fence-full-page-isolated`：1 PASS，12.030 秒，不关闭组合失败。
+原 trace 的 A/B/final 可见性均 PASS，FAIL 精确为 final-outside-collapsed-process 的完整过程折叠等待。
+实际初始 subscribe 已带目标 focused；wire 有 A/B/final 三个 runtime_overlay，sequence 27/59/76。
+它没有 R35 的缺少 wire focus 观察；帧存在也不能单独证明 Service/Cubit 接受或布局正确。
+旧 FAIL 快照只含 sync，无后加的 SQL/Cubit/disclosure 快照，因此尚不足以归因。
+
+root 没改源码或断言，在 clean adf337ea 用原四个文件名组合、不指定 --concurrency 重跑：
+`c1b-r29-default-concurrency-probe`，50 PASS，exit 0，17.398 秒。
+比旧输入多 C1a 契约及 held 页面，源码/fixture 亦已变化；这只证明当前有限重放，
+不是旧 SHA 敏感性 red/green，也不代表完整默认并发或云 CI 已验收。
+原 FAIL 继续列 R29 FAIL，不反复重跑至绿，不把它归为偶发/负载或 R35 同因。
+
+旧 receipt/有序 stages、实际 subscribe/overlay 与四个 trace 文件 SHA 保存
+`c1b-r29-historical-evidence-inventory.json`。下一批具体允许范围、缺少事实、命令、
+停止扩大条件见 [R29-FOLD-ENTRY](R29-FOLD-ENTRY.md)。
+先记录原接收路径是否接受完成/idle 与 turn identity、stream 状态和布局计数，再形成确定性 red；
+在正确结果或取消归属尚不明确时不迁移 runtime queue。

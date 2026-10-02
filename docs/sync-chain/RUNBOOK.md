@@ -30,7 +30,8 @@
 | 只读 History 解码与实际接受后提示确认 | handler.prepareHistory / commitPreparedHistory；原 live/handle 兼容 | R33/R34 |
 | canonical 不可变准备、duplicate 判定、原输入 receipt 证据 | detached_timeline_projection.dart 的 candidate | R30–R32 |
 | 整体 admission、当前 overlay 筛选、状态应用与 receipt/alias 消费 | 原 Cubit / candidate.compose | R26/R28/R30–R34 |
-| runtime 完成、stream 关闭与实际 layout | 原 Bridge/Service/Cubit streaming handler / layout | R09/R29/R35；R35 焦点竞态待证明 |
+| subscribe 实际发送快照、匹配接受补发及失效清理 | SyncService._rememberSubscriptionFocusAtSend / _reconcileSubscriptionFocus / 原发送出口 | R35/R36；十七项与 held 原页面 red/green |
+| runtime 完成、stream 关闭与实际 layout | 原 Bridge/Service/Cubit streaming handler / layout | R09/R29/R35；R29 接受/折叠事实待定位 |
 
 调度器只接受不可变的身份/观察值和三个窄回调：判断当前操作、执行既有修复、重新观察缓存。
 它没有数据库、Gateway 或页面对象。route 或 manual refresh 导致 focus 离开，与 thread reset 调用 clearTarget；
@@ -60,6 +61,11 @@ canonical candidate 只拥有不可变准备结果，不持有 Cubit/handler/Ser
 overlay 按应用时的原 runtime/source 身份筛选，不能在 prepare 阶段提前缓存旧 overlays。
 receipt/alias 证据来自原 canonical，compose enrichment 不能制造提交凭据。
 同一共享 handler 与 streaming/thinking 对象继续使用，不能为消除拒绝副作用替换整个 handler。
+
+订阅焦点快照绑定实际发送的 request/generation/target/Bridge/source/协议，只有当前接受可以消费。
+syncBegin/subscribed 在首次 await 前核对当前意图，相同不发、不同用原 focus 消息（含 null）。
+失效与错误都经原出口退休，补发失败不能继续 bootstrap/notify/ACK；旧接受不能清理新快照。
+全部接点与回退保护见 RUNTIME-ITEM-BOUNDARY，不能将该状态塞进 canonical candidate 或页面 reader。
 
 接收排序中的 await 只等本地缓存观察进入 scheduler，不等待 repair 网络回复。
 不要把它恢复成纯后台观察，否则较晚 repair completion 可能抢先记完成值，吞掉较早的 dirty 进度。
@@ -102,6 +108,7 @@ cd apps/mobile
   test/features/conversation_content_sync/latest_turn_repair_scheduler_test.dart \
   test/features/conversation_content_sync/older_turns_paging_lifecycle_test.dart \
   test/features/conversation_content_sync/conversation_content_sync_service_test.dart \
+  test/features/conversation_content_sync/subscription_focus_admission_test.dart \
   test/features/session_list/cache/session_catalog_cache_repository_test.dart \
   test/models/conversation_sync_v2_protocol_test.dart
 "$CCPOCKET_FLUTTER_BIN" test --no-pub --reporter expanded --concurrency=1 \
@@ -141,12 +148,15 @@ git diff --check
 调整其他平台发布工作流时，也须确认其黑盒测试前置条件，不能把缺少 dist 改成静默跳过。
 黑盒 trace 含隔离 fixture 的原始 RPC、Bridge/client 帧、SQLite 条目 hash 与页面断言；
 可设置 CCPOCKET_CHAIN_TRACE_PARENT 将下次 fixture trace 留在持久证据目录。
-以上并发度对应 C1a/C1b 的最终本地收据；默认并发与云 CI 未在本轮验收。
+以上并发度对应 C1a/C1b 的最终本地全量收据；完整默认并发与云 CI 未在本轮验收。
+R29 原四文件组合在当前 clean adf337ea 默认并发 50 PASS，仅证明这次有限重放。
 早期并发 full-page 折叠等待 FAIL 的输入/投影/宿主时序仍待归属，不能因串行 PASS 删除该记录。
-另有 C1b 两次 commentary B 可见性 FAIL，见 R35；d0f164e5 的观测输入全量 PASS 不关闭该问题。
+另有 C1b 两次 commentary B 可见性 FAIL，见 R35；经确定性交错旧 Service red / 修复 green 关闭选定窗口，
+原 FAIL 仍保留。最新产品 ce51e280 / 完整测试输入 adf337ea 的全量与独立复核见 E041。
 页面失败快照含 SQL、Cubit、renderedText/disclosure，跨 await 的快照不是原子快照。
 runtime-overlay-origin 在 Provider 发射回调采样，早于生产 sessionMessage，不代替其实际判定事实。
-当前重放与下一步定位见 RUNTIME-ITEM-BOUNDARY；独立保留两次失败与焦点差异对照。
+焦点责任与重放见 RUNTIME-ITEM-BOUNDARY；旧折叠等待的下一步见 R29-FOLD-ENTRY。
+独立保留两次失败、焦点差异、Service swap 恢复及最终 clean 门禁。
 
 ## 回退与后续批次
 
@@ -170,12 +180,16 @@ C1a 的 E028 deferred read 行为依赖 E026 lifecycle 接口；直接 revert E0
 E023/E027 是红灯 checkpoint，E026 仍有后来定位的 source-return 缺口，不能作运行候选。
 十三个真实 SQL 页面与八个纯生命周期契约须保留并通过，原 Service/SQL/Cubit 权威不能改变。
 
-C1b 产品冻结 2f64e383、最终测试/fixture 输入 d0f164e5；全量与独立复核见 E037。
+C1b 最终产品冻结 ce51e280、完整测试/fixture 输入 adf337ea；全量与独立复核见 E041。
+2f64e383/d0f164e5 的 E037 是此前 canonical/观测输入门禁，不覆盖后来的焦点修改。
 回退 candidate 结构须适配后续 Cubit 接口，并保留 E032 admission 与 E035 提示确认的行为修复；
 E031/E034 红灯 checkpoint 不能作为运行候选。十五项新保护与原 SQL/页面用例均须保留。
 E036 只有测试观测，不是 R35 修复，撤掉它也不能删除原断言或改变 15 秒期限。
-下一步按 [RUNTIME-ITEM-BOUNDARY](RUNTIME-ITEM-BOUNDARY.md) 证明 pending subscription 的焦点变化：
-subscribe 已发送但 syncBegin 未接受时改变焦点，确认当前焦点是否实际补发。
+E039 焦点行为只在 Service，E040 的 held FIFO 闸门只在测试 fixture。
+回退行为保留十七项保护与 held-page red；回退 fixture 不移除原五个黑盒/断言或改变期限。
+旧 Service 的单文件换回只用于隔离敏感性验证，已在 finally 恢复并核对 hash，不能部署红灯版本。
+下一步按 [R29-FOLD-ENTRY](R29-FOLD-ENTRY.md) 先记录 runtime/status 接受、canonical、stream 与折叠计数，
+再形成确定性 red；没有行为因果时继续留未知，不迁移 runtime queue。
 既有其他分页/控制路径的相似交错仍待各自证明，不从 older 两个出口的修正推断它们已经正确。
 不扩大到 Cubit 全面重写、Bridge 总路由重写或 V4 候选整合。
 
