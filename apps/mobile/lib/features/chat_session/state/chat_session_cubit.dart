@@ -17,13 +17,10 @@ import '../../../utils/diagnostic_token.dart';
 import '../../../utils/history_window_policy.dart';
 import 'detached_timeline_projection.dart';
 import 'chat_session_state.dart';
+import 'runtime_overlay_quarantine.dart';
 import 'streaming_state_cubit.dart';
 
 typedef ChatImageAttachment = ({Uint8List bytes, String mimeType});
-typedef _PendingDetachedRuntimeOverlay = ({
-  ConversationSyncV2EventMessage event,
-  int bytes,
-});
 typedef ChatImagePayloadEncoder =
     Future<List<Map<String, String>>> Function(
       List<ChatImageAttachment> images,
@@ -351,8 +348,8 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
       'rejectedRuntimeOverlayCount': _detachedRejectedRuntimeOverlayCount,
       'runtimeOverlayOriginGeneration': _detachedRuntimeOverlayOriginGeneration,
       'runtimeOverlayEventCount': _detachedRuntimeOverlayEventIds.length,
-      'pendingRuntimeOverlayCount': _pendingDetachedRuntimeOverlays.length,
-      'pendingRuntimeOverlayBytes': _pendingDetachedRuntimeOverlayBytes,
+      'pendingRuntimeOverlayCount': _runtimeOverlayQuarantine.length,
+      'pendingRuntimeOverlayBytes': _runtimeOverlayQuarantine.bytes,
       'runtimeAssistantAliasCount': _detachedRuntimeAssistantAliases.length,
       'localOutgoingClientIdCount': _detachedLocalOverlayClientIds.length,
     },
@@ -717,9 +714,10 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
   static const _maxDetachedRuntimeOverlayEntries = 32;
   static const _maxDetachedRuntimeOverlayBytes = 64 * 1024;
   final Set<String> _detachedRuntimeOverlayEventIds = {};
-  final Map<String, _PendingDetachedRuntimeOverlay>
-  _pendingDetachedRuntimeOverlays = {};
-  int _pendingDetachedRuntimeOverlayBytes = 0;
+  final _runtimeOverlayQuarantine = RuntimeOverlayQuarantine(
+    maxEntries: _maxDetachedRuntimeOverlayEntries,
+    maxBytes: _maxDetachedRuntimeOverlayBytes,
+  );
   int? _detachedRuntimeOverlayGeneration;
   String? _detachedRuntimeOverlayOriginGeneration;
   String? _detachedRuntimeOverlayTurnId;
@@ -1345,7 +1343,7 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
       return;
     }
     if (_detachedRuntimeOverlayEventIds.contains(overlayId) ||
-        _pendingDetachedRuntimeOverlays.containsKey(overlayId)) {
+        _runtimeOverlayQuarantine.contains(overlayId)) {
       return;
     }
     if (currentAuthorityGeneration?.isNotEmpty == true &&
@@ -1414,11 +1412,13 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
   ) {
     final overlayId = event.overlayId!;
     final bytes = _detachedRuntimeOverlayMessageBytes(message);
-    if (bytes > _maxDetachedRuntimeOverlayBytes ||
-        _pendingDetachedRuntimeOverlays.length >=
-            _maxDetachedRuntimeOverlayEntries ||
-        _pendingDetachedRuntimeOverlayBytes + bytes >
-            _maxDetachedRuntimeOverlayBytes) {
+    final admission = _runtimeOverlayQuarantine.add(
+      overlayId: overlayId,
+      event: event,
+      bytes: bytes,
+    );
+    if (admission == RuntimeOverlayQuarantineAdmission.duplicate) return;
+    if (admission == RuntimeOverlayQuarantineAdmission.capacityRejected) {
       _detachedRejectedRuntimeOverlayCount += 1;
       logger.warning(
         '[timeline_projection] event=runtime_overlay_quarantine_rejected '
@@ -1426,12 +1426,10 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
       );
       return;
     }
-    _pendingDetachedRuntimeOverlays[overlayId] = (event: event, bytes: bytes);
-    _pendingDetachedRuntimeOverlayBytes += bytes;
     logger.info(
       '[timeline_projection] event=runtime_overlay_quarantined '
       'thread=$_projectionThreadToken pending='
-      '${_pendingDetachedRuntimeOverlays.length} '
+      '${_runtimeOverlayQuarantine.length} '
       'authorityMatches=${event.authorityGeneration == _detachedAuthorityGeneration} '
       'turnMatches=${event.turnId == _detachedActiveTurnId} '
       'hasActiveTurn=${_detachedActiveTurnId?.isNotEmpty == true} '
@@ -1451,22 +1449,18 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
   }
 
   void _removePendingDetachedRuntimeOverlay(String overlayId) {
-    final removed = _pendingDetachedRuntimeOverlays.remove(overlayId);
-    if (removed == null) return;
-    final nextBytes = _pendingDetachedRuntimeOverlayBytes - removed.bytes;
-    _pendingDetachedRuntimeOverlayBytes = nextBytes < 0 ? 0 : nextBytes;
+    _runtimeOverlayQuarantine.remove(overlayId);
   }
 
   void _clearPendingDetachedRuntimeOverlays() {
-    _pendingDetachedRuntimeOverlays.clear();
-    _pendingDetachedRuntimeOverlayBytes = 0;
+    _runtimeOverlayQuarantine.clear();
   }
 
   void _flushPendingDetachedRuntimeOverlays() {
-    if (_pendingDetachedRuntimeOverlays.isEmpty) return;
-    for (final pending in _pendingDetachedRuntimeOverlays.entries.toList()) {
-      final event = pending.value.event;
-      final overlayId = pending.key;
+    if (_runtimeOverlayQuarantine.isEmpty) return;
+    for (final pending in _runtimeOverlayQuarantine.snapshot) {
+      final event = pending.event;
+      final overlayId = pending.overlayId;
       final message = event.overlayMessage;
       final originGeneration = event.originGeneration?.trim();
       final runtimeSessionId = event.runtimeSessionId?.trim();

@@ -5,7 +5,7 @@
 - 时间：2026-10-03（Asia/Shanghai；此前条目保留当时记录）。
 - 分支：`codex/sync-chain-extraction-20261001`。
 - 起始 SHA：`930f1267e949c6cf2095761cc71c43cca08c6dc3`。
-- 阶段：A0–A3 / B1、B2、C1a 与 C1b 选定接缝已完成源码门禁；C1c 89084bcb 全量已绿，但独立复核的 runtime 身份缺口已由 public red 证明，先修边界，暂不迁移 runtime queue。
+- 阶段：A0–A3 / B1、B2、C1a 与 C1b 选定接缝已完成源码门禁；C1c 89084bcb 全量已绿，但独立复核的 runtime 身份缺口已由 public red 证明，原接点修复后已迁移quarantine唯一owner，最终门禁待E058冻结。
 - 最新完整门禁产品 SHA：`ce51e28027087e5fe4d4d79533390203ae3735a8`，canonical 与焦点行为分开提交。
 - 最新固定测试/fixture 输入：`adf337ea5f2ddddf3639da4e37b020435033b1d1`，全部门禁启动时 clean。
 - 最新全量 Mobile 3333 PASS / 4 SKIPPED（--concurrency=1），Bridge 2546 PASS / 1 SKIPPED；build/typecheck/格式通过。
@@ -1419,3 +1419,22 @@ red checkpoint `ad94066c5176c9ebfec6081e55debf59d403f785`。
 仍通过原status呈现/visual validation，不获得这条新增清流资格。其他身份/ticket/revision条件不变。
 `c1c-terminal-confidence-green`：二十一项terminal与十三项queue共34 PASS，退出0，2.526秒。
 接着只做已保护quarantine map/bytes的结构迁移；不把未知控制lease或visual overflow包装成正确策略。
+
+## E058 — 隔离队列只拥有一个map与一份byte统计
+
+结构父输入 `16529517d54a5071442953e732775b9780f4d183`，行为修复已在E055/E057独立提交。
+新增runtime_overlay_quarantine.dart：RuntimeOverlayQuarantine只持有insertion-order map与bytes，
+提供contains/add/remove/clear及固定FIFO snapshot；add区分accepted/duplicate/capacityRejected，
+超限拒绝新事件而不淘汰旧事件。原规范化预算编码仍由Cubit唯一计算，不另序列化正文。
+原map/private record/bytes已删除，不保留第二份状态；diagnostic读新owner。
+
+原Cubit仍负责provider/thread/source/runtime/origin/authority/turn/time admission、
+accepted-ID去重、visible rows/aliases、flush remove-before-apply、turn退休和所有取消出口。
+helper没有Bridge/Service/Repository/Cubit/Page或callback，不建立状态投影或RPC/SQL写入权。
+visual pending、stream buffers与visible overlay独立，不并入helper。
+
+`c1d-runtime-queue-extraction-contracts`：原相同五文件public/JSON/SQLite契约370 PASS，
+exit0，17.559秒；diff SHA256 `30d2aae9ed3ff088f68d334e0bae92d5430c4c247334161956a728c8261a5497`。
+此结构批没有修改上一批消息、数量/UTF-8预算、身份/拒绝策略或deadline。
+接下来冻结source/test/doc输入，完整Mobile/Bridge、analyze/typecheck/format与固定SHA独立复核。
+最终全量含原七黑盒；期间不再编辑产品或测试，失败如实保留后才改变下一输入。

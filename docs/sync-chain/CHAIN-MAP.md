@@ -107,6 +107,23 @@ Bridge 焦点/authority fence 保持原规则。十七项契约与原页面旧 r
 R29 旧失败的 subscribe 已有焦点，wire 有 A/B/final 三个完成事件；不能套用 R35 根因，
 后续接受与折叠判断的缺口见 [R29-FOLD-ENTRY](R29-FOLD-ENTRY.md)。
 
+## C1c/C1d 的终态与隔离队列边界
+
+StreamingStateCubit唯一持有inputRevision，append接受时即推进，包含未发布text/thinking；reset也推进。
+原Cubit在tagged socket idle且经过external Desktop guard后记录generation/source/revision ticket。
+新增terminal清理还必须满足当前source/binding lease及status的bridgeRuntime、authoritative、
+bridge host、loaded、远端runtimeSessionId精确匹配；ticket未被后续增量/reset/重绑改变。
+普通idle只提供顺序证据；status中的runtime ID来自Bridge snapshot.bridgeSessionId，
+appServer/失效转换剥离旧ID，JSON/SQL保存它；它本身不构成控制授权。
+过滤runtime rows在清visual assistant alias前发生，runtime completion不取得canonical写权。
+
+RuntimeOverlayQuarantine独占pending map与bytes，最大32个event/64KiB编码消息；
+超限拒绝新事件，duplicate不改预算，remove/clear一起退休bytes。
+原Cubit继续唯一负责admission、编码预算、apply和source/runtime/authority失效。
+同binding/authority的turn退出只退休visible tracking；保留的pending随后由原flush逐项匹配或按时间拒绝。
+visual pending的256/257策略仍在原Cubit，尚未审定，不借quarantine合同宣称正确。
+保护、失败及回退入口见R37–R46、RUNTIME-STATUS-IDENTITY、RUNTIME-QUEUE-ENTRY与E052–E058。
+
 ```mermaid
 flowchart LR
   P[Provider / 隔离 fixture] --> B[Bridge / RPC 转换]
@@ -138,6 +155,8 @@ repair transaction 接受后仍走原通知出口；图不表示所有事务都�
 | 128 个完成观察 | scheduler 的 summary observation 记忆 | 去重与新进度、R02/R03；不是 Provider revision |
 | 15 秒响应 deadline | older lifecycle 已登记的单次 wire request | deadline/终态与迟到 reply，R18；不是 SQLite 事务强行回滚期限 |
 | 两次尝试 / 8 秒等待 | SyncService older 订阅替换恢复 | 只对 paging interruption 重试，R07/R08/R17；thread reset/error 不绕过预算 |
+| 32 events / 64KiB | RuntimeOverlayQuarantine的尚未验证authority/turn消息 | FIFO/拒绝新超限/bytes退休，R43/R44；不是已呈现条目的裁剪 |
+| 256 messages | 原Cubit的visual turn validation pending | 256/257溢出策略尚NOT_RUN，R45；本轮不迁移 |
 | limit 1–20 | older summary turns request | 分页 cursor 前进与数据范围，R17/R19；不等于 Mobile frame entries limit |
 
 相同数值可能约束不同对象。先确认对象和权威出口，再判断是否能合并或退役；

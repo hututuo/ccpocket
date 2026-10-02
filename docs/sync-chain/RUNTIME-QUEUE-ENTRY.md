@@ -3,7 +3,8 @@
 本文件从 C1c `89084bcb` 的队列责任梳理；随后 runtime status 身份已补分项契约，见 PROCESS E052/E053。
 最终全量门禁待候选冻结登记，本文件不是终态候选的完整验收。
 当前十三项公开queue契约PASS，future turn两项red已在原接点窄修；原七黑盒PASS（E054/E055）。
-下面候选模块尚未实现，现有两个队列仍由原 Cubit 持有；完整门禁待候选冻结。
+quarantine已迁到RuntimeOverlayQuarantine唯一owner，visual pending仍由原Cubit持有（E058）。
+完整门禁待候选冻结，结构迁移保留原十三项输入。
 终态修复目前只证明 R37–R42 的分项契约，历史 R29 和 095cab00 全量失败的直接归因仍留未知。
 
 ## 两套队列不能合并
@@ -11,7 +12,7 @@
 | 对象 | 现在的唯一 owner | 暂存原因 | 容量与当前溢出动作 | 出队条件 |
 |---|---|---|---|---|
 | visual pending | ChatSessionCubit 的 preserved turn / validation pending / pending visual list | runtime 重绑或首次 source 确认时，旧可见输出仍保留，新 delta/completion 尚不能归属同一 turn | 256 个消息；第 257 个触发原 visual reset，再按顺序 replay 已缓存加新消息；此策略仅是现状，边界契约尚未审定 | 当前 active、result=none 且带 turn ID；同 turn 保留旧输出，不同 turn 清旧输出再重放；terminal 不重放 |
-| runtime overlay quarantine | ChatSessionCubit 的 overlayId→event/bytes map 与总 bytes | source/runtime envelope 已合法，但当前 authority/turn 还未匹配 | 32 个 event / 64 KiB 编码消息预算；超限拒绝新消息，保留已有队列 | exact authority+activeTurn 匹配；先 remove 再走原 validated apply；明确旧时间/observer/runtime 则 remove+reject |
+| runtime overlay quarantine | RuntimeOverlayQuarantine 的 overlayId→event/bytes map 与总 bytes | source/runtime envelope 已合法，但当前 authority/turn 还未匹配 | 32 个 event / 64 KiB 编码消息预算；超限拒绝新消息，保留已有队列 | exact authority+activeTurn 匹配；先 remove 再走原 validated apply；明确旧时间/observer/runtime 则 remove+reject |
 | visible runtime overlays | 原 Cubit state.entries、runtime assistant aliases 与 overlay tracking | 已验证的临时条目等待 canonical 消费或终态退休 | 独立 32 条 / 64 KiB，按现有 trim 规则裁剪旧呈现行 | canonical exact alias 消费或原 runtime/authority/turn reconcile |
 | accepted overlay event IDs | 原 Cubit 的已应用 ID set | 防重放，不是正文队列 | 128 个 ID，移除最旧已应用 ID | runtime tracking reset；不能拿 quarantine 去重代替它 |
 | stream pending | StreamingStateCubit 的 text/thinking buffers、flush timer、inputRevision | 合并高频 UI 发布 | 原 32ms 起步与长度阈值 cadence；不在本批改策略 | flush 发布、reset/close 取消 timer；revision 在 append 接受时推进 |
@@ -65,11 +66,13 @@ visual 同 turn、旧 ID 未知、首次 source 确认、不同 turn、idle 和�
 外部提供的消息身份/UTF-8 字节与规范化编码预算用于断言；不通过私有方法 spy 证明实现。
 发现行为缺口先在原接点 red→green，独立提交，不立即把未明策略包装进新 helper。
 
-可评估的首个结构候选是 `RuntimeOverlayQuarantine`：仅拥有 insertion-order map 与 bytes，
-输入为 overlay ID、不可变 event、已由原预算编码计算出的 bytes；返回 accepted/duplicate/capacity 结果。
+已实现的首个结构模块是 `RuntimeOverlayQuarantine`：仅拥有 insertion-order map 与 bytes，
+输入为overlay ID、原event、已由原预算编码计算出的bytes；返回accepted/duplicate/capacityRejected。
+固定FIFO snapshot复制迭代窗口，不复制或另持一份正文；原flush在apply前remove。
 authority/source/time eligibility、apply、accepted-ID 去重、visible rows 与控制权继续在原 owning path。
 它不持有页面、Cubit、Service、Repository 或 Bridge，也不再计算第二套 payload 编码。
-把 map、bytes、remove、clear 一起迁移，移除原双份状态；全部 clear/flush/close 接点要有调用表。
+map、bytes、remove、clear已一起迁移，原状态已删除；clear/flush/close接点仍经上表的Cubit原出口。
+文件：apps/mobile/lib/features/chat_session/state/runtime_overlay_quarantine.dart；不新增异步close/join。
 
 visual pending 暂不迁移；256/257 与 future terminal 策略未证明前不把两种 queue 做通用 coordinator。
 每次结构提交保持原消息、容量、deadline 与拒绝行为；新增策略另起行为批。
