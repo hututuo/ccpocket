@@ -44,7 +44,7 @@
 | R37 | 已确认当前 turn 的 idle 先于最终 runtime completion 的 consumer delivery | 当前终态退休 transient；canonical 前/后到达均 A/B fold、final 在外；晚到旧完成不重启，运行中/旧身份仍隔离 | PASS 11 项 public 契约与原三文件七个黑盒；基线两项/原页面 red 和旧 Cubit 敏感性 FAIL 均保留；最终门禁待跑；E043–E048。历史 R29 归因仍未知 |
 | R38 | bootstrap idle / 未入库 completion 与终态清理 | 未确认 turn 的 idle 不抢走新 delta；filter 在 alias reset 前执行，runtime completion 无 canonical 写权 | PASS 两项行为 red→green、原 receiver 未改且恢复；最终全量待跑。E044 首修对应两项缺口和dcf0b086完整3340 PASS/4 SKIPPED/1 FAIL保留；E045/E048 |
 | R39 | 旧 terminal 接纳晚于新 raw delta / coalesced pending delta | 旧终态不能清后来的增量；下一次匹配 socket+committed idle 仍能结束流 | PASS 11 项 public 契约，text/thinking append 与 reset 由原 StreamingStateCubit 独占 revision；两项 red 保留；最终全量待跑，尚非真实双 turn/设备回放；E047/E048 |
-| R40 | turnless working / 暂缺 provider projection 后的 socket 完成 | 当前 bridgeRuntime 权威 idle 与未变化 socket ticket 可退休流；普通 idle、无权威、外部 host 不取得新清流资格 | FAIL 两项 public 行为 red；与095cab00完整原页面FAIL的直接关系尚未证明；E049 |
+| R40 | turnless working / 暂缺 provider projection 后的 socket 完成 | 当前 bridgeRuntime 权威 idle 与未变化 socket ticket 可退休流；普通 idle、无权威、外部 host 不取得新清流资格 | PASS 十六项 public 契约，五项 red→green及七黑盒；固定SHA全量待跑。与095cab00完整原页面FAIL的直接关系尚未证明；E049–E051 |
 
 R09/R10 的最上游是隔离 Provider fixture，使用真实 Bridge、协议、SQLite 和页面相关代码；
 即使 PASS，也只证明接收闭环，不冒充 R13/R14。

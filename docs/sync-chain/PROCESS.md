@@ -1265,9 +1265,33 @@ turnless working 或暂缺 projection，再接受合法 bridgeRuntime idle。ord
 E049 诊断与两项 red 输入冻结 `2bc616050e55dbcd3dcc9f5f77ce5f1ab372d621`。
 在原十一项和 turnless/暂缺两项之外，补三种反向输入：缺 authorityGeneration、desktopAppServer host、
 appServer evidence source。三者即使在 socket idle 后到达，也不能凭旧 activeTurnId 获得新的清流资格。
-`c1c-terminal-socket-authority-red`：11 PASS / 5 行为 FAIL，exit1，3.171 秒。
+`c1c-terminal-socket-authority-red`：11 PASS / 5 行为 FAIL，exit1，2.845 秒（按原始收据校正时长）。
 此时产品仍是 095cab00 的行为，只有 E049 只读观测；五个失败均发生在 streaming 保留/退休断言。
 接下来限定 source=bridgeRuntime、host=bridge、loaded attachment、当前 source/binding 的 authority lease，
 再核对原 ticket/input revision。这样不靠已被暂缺/turnless 投影清掉的控制 turn ID，
 也不把普通 idle 顺序证据误当作 Provider 权威。原 source/time/provider/rejected-authority fence 不变。
 E049 用于追踪的高频流操作与暂缺日志将移除；保留只读 revision/ticket 快照和终态/quarantine 原接点事实。
+
+## E051 — 当前 Bridge lease 与流顺序共同限定清理
+
+红灯输入 `2d5c0a272da98f3140b5caa2138bd18822af0634`。仅修改原 Cubit 的终态资格：
+idle、bridgeRuntime source、bridge host、loaded attachment、当前 source/binding authority lease、
+未变化的 socket ticket 必须同时成立。暂缺/turnless 不再凭旧控制 turn ID 阻塞合法清流。
+保留原 admission/time/rejected authority、runtime alias 先过滤、ordinary external guard 与 pending visual validation；
+current lease 只是被原状态投影建立的事实，ticket 不新建 lease，也没有 canonical/control 写权。
+没有修改 Service、Bridge、SQL、reader、handler、layout 或两个原 receiver。
+移除 E049 高频暂缺/每条流操作诊断，保留原接点的只读 revision/ticket、quarantine 匹配和 hasActiveTurn 事实。
+
+同 red 输入加唯一产品 diff 与 E050 时长校正（diff SHA256 `05591add239e83999684c635d78b2a2883725e5330bee87c7557ca6e1ed75cd4`）：
+
+| 收据 | 实际结果 | 退出码 / 时长 |
+|---|---|---|
+| c1c-terminal-socket-authority-green | 十六项 public 契约 PASS，五项 red 转绿，旧十一项仍通过 | 0 / 2.750 秒 |
+| c1c-terminal-authority-blackbox-green | 原三文件七个黑盒 PASS，含 pending-focus 与 held-final 全部原fold/恢复/RPC断言 | 0 / 31.019 秒 |
+
+`c1c-terminal-authority-page-comparison.json`：held-final 在 Service 接受后延迟到原 consumer，
+terminal-before-completion / 原 fold / release 后均 streaming=false、intermediate=[1,2]、final index3。
+同一 event 的 sequence/subscription/origin/runtime/authority/turn/time 未变化；
+canonical ID/顺序/hash 和四行内容与 E043 red 相同。没有 refresh、重建或改期限来取得通过。
+095cab00 全量 FAIL 的直接路径与历史 R29 仍不作因果关闭；分项通过不是完整验收。
+接着冻结这版 SHA，完整 Mobile/analyze/format 与固定 SHA 独立复核；队列入口先写职责与未覆盖契约。

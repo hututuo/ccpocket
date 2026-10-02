@@ -2281,11 +2281,6 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
     if (!detachedPreview || isClosed) return;
     final sourceChanged = _adoptDetachedProviderSource(sourceFingerprint);
     if (status == null) {
-      logger.info(
-        '[timeline_projection] event=provider_status_absent '
-        'thread=$_projectionThreadToken '
-        'hadActiveTurn=${_detachedActiveTurnId?.isNotEmpty == true}',
-      );
       final authorityChanged =
           _detachedAuthorityObserved ||
           _detachedExecutionHost != null ||
@@ -2411,12 +2406,15 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
         authorityGeneration: authorityGeneration,
       );
       if (nextStatus == ProcessStatus.idle &&
-          _detachedActiveTurnId?.trim().isNotEmpty == true &&
+          status.source == 'bridgeRuntime' &&
+          executionHost == 'bridge' &&
+          status.runtimeAttachment == 'loaded' &&
+          _hasCurrentDetachedAuthorityLease &&
           _hasUnchangedDetachedTerminalVisualTicket) {
         // Status and item completion travel through separate observers. A
-        // terminal projection retires a previously confirmed active turn
-        // only if no delta followed its socket idle boundary. A delayed
-        // status must not erase output already started by the next turn.
+        // current Bridge terminal projection can retire the socket output
+        // even if an incomplete status cleared its control turn id. No
+        // delta or reset may have followed the socket idle boundary.
         _clearDetachedVisualTimeline();
       } else {
         _validateDetachedVisualTurn(
@@ -5524,20 +5522,6 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
         : null;
 
     // --- Streaming state (separate cubit) ---
-    if (detachedPreview &&
-        _detachedTerminalVisualTicket != null &&
-        affectVisibleStreaming &&
-        (update.resetStreaming ||
-            originalMsg is StreamDeltaMessage ||
-            originalMsg is ThinkingDeltaMessage ||
-            originalMsg is AssistantServerMessage)) {
-      logger.info(
-        '[timeline_projection] event=stream_input_after_socket_idle '
-        'thread=$_projectionThreadToken kind=${originalMsg.runtimeType} '
-        'reset=${update.resetStreaming} '
-        'streamRevision=${_streamingCubit.inputRevision}',
-      );
-    }
     if (update.resetStreaming) {
       messageHandler.currentStreaming = null;
       if (affectVisibleStreaming) _streamingCubit.reset();
