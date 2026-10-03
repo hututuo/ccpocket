@@ -68,6 +68,7 @@ visual pending 的 256/257 策略仍未验证，不据此扩大结构迁移。
 8. [运行与焦点边界](RUNTIME-ITEM-BOUNDARY.md)：R35 根因、焦点快照所有权与回退保护。
 9. [R29 折叠等待入口](R29-FOLD-ENTRY.md)：保留失败、当前重放、缺少证据和下批执行顺序。
 10. [状态身份](RUNTIME-STATUS-IDENTITY.md)、[队列职责](RUNTIME-QUEUE-ENTRY.md)：C1c/C1d 的选定契约与未知边界。
+11. [控制权限入口](RUNTIME-AUTHORITY-ENTRY.md)：C1e 的旧runtime公开失败、兼容保护与修复范围。
 
 过程记录不得以旧证据覆盖新失败。源码测试通过、真实 Provider、模拟器、真机、部署和发布分别报告。
 这组文档与对应代码一同提交；原始测试输出保存为独立文件，账本记录命令、身份、结果和证据路径。

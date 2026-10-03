@@ -5,7 +5,7 @@
 - 时间：2026-10-03（Asia/Shanghai；此前条目保留当时记录）。
 - 分支：`codex/sync-chain-extraction-20261001`。
 - 起始 SHA：`930f1267e949c6cf2095761cc71c43cca08c6dc3`。
-- 阶段：A0–A3 / B1、B2、C1a、C1b、C1c/C1d 的选定接缝已完成源码门禁；下一批先核对原 mutation lease 的 runtime 归属，尚不搬 visual pending。
+- 阶段：A0–A3 / B1、B2、C1a、C1b、C1c/C1d 的选定接缝已完成源码门禁；C1e 已由公开实际发送/stop/interrupt证明旧runtime权限混用，保存red后窄修，尚不搬visual pending。
 - 最新完整门禁产品/测试 SHA：`da3d3f610c4507ad15c501a9c8c7ffeceb143dac`，身份、置信度、future turn 行为与队列结构分别提交。
 - 仅测试写法后续 SHA：`2f95d6d03e2b371c9eb7f8283eeaa76eec048808`，产品/依赖/黑盒 tree 不变；相关 40 项及完整静态分析另查。
 - 最新全量 Mobile 3370 PASS / 4 SKIPPED（--concurrency=1），Bridge 2546 PASS / 1 SKIPPED；build/typecheck/格式通过，继承与重跑分别登记。
@@ -13,7 +13,7 @@
 - R35 pending focus 缺陷已确定性旧 Service red → 窄修 → 相同原页面 green，关闭选定交错；旧两次 FAIL 与恢复收据保留。
 - C1c `095cab00` clean 全量 3344 PASS / 4 SKIPPED / 1 FAIL，不是可验收候选；新 R40 两项 red 和诊断见 E049。
 - 已接受最新门禁证据见 E059/E060；red→green、提交索引与回退见 E043–E060。
-- R47 queue-only authority 留存为旧策略未审定；R48 原控制 lease 尚未有本批的远端身份归属契约，不据视觉修复宣称控制链验收。
+- R47 queue-only authority 留存为旧策略未审定；R48 原控制lease的已知runtime身份不匹配已由E061行为red证明，不据视觉修复宣称控制链验收。
 - E024 的历史并发折叠等待 FAIL 尚未归属；当前同四文件默认并发 50 PASS，不能据此关闭旧失败或宣称设备/运行链验收。
 - 真实 Provider、模拟器/真机、生产 Bridge、云 CI、OTA/发布 NOT_RUN；原生 UI 自动化工具缺失为 BLOCKED。
 - 最新提交与验证身份在后续条目登记；不能从本节推断部署状态。
@@ -1516,3 +1516,35 @@ README、PLAN、地图、矩阵、RUNBOOK 与入口文档同步说明当前责�
 若新旧 runtime 无法判定，继续补证据；不把 ID 直接当 authority，不删除旧 Bridge 的合法兼容用途。
 future authority 等待策略另列 R47；它没有因本次视觉队列清理而自动变正确。
 所有提交限本独立分支；原 main、旧 repair checkout、生产服务和发布状态分别保持原授权边界。
+
+## E061 — 旧 runtime 状态确实混成当前控制目标
+
+父输入 `0cb8c5fba8d0bf78f5f1606f6c426c933a1090ed`，产品仍与 `da3d3f6` 一致。
+先完成原 mutation lease 的限定只读入口调查，具体事实与产品原则见 RUNTIME-AUTHORITY-ENTRY。
+新增 detached_runtime_authority_test.dart，以原 MockBridge、public status/runtime绑定与各控制入口证明行为。
+SyncV2-only 与 SyncV2+RuntimeOverlay 分开运行，mutation exactness依据前者，而不是overlay能力。
+
+初次 `c1e-runtime-authority-public-red`（1 / 1.654秒）是fixture缺enum显式import的编译失败，
+不是产品red。Root从mobile cwd误用root-relative staging路径，测试仍为untracked；
+`c1e-runtime-authority-fixture-startup.json`另记当时文件SHA256与该命令错误，原日志保留。
+补import并正确纳入diff后，不改产品、原消息或目标断言：
+`c1e-runtime-authority-public-red-corrected`：8 PASS / 8行为FAIL，1 / 2.361秒，
+diff SHA256 `470715009ed2c84b1c8b500a958e94cc35d3bc677d549db04784a1e9c061a5f4`。
+
+进一步将stop/interrupt拆为独立断言，并把实际发送序列化到wire JSON用于失败证据：
+`c1e-runtime-authority-dispatch-red`：8 PASS / 12行为FAIL，1 / 2.385秒，
+diff SHA256 `9ddea87759dcba8c16d0a668683b9d5bad18e42c2020ac1e357388762498ea8e`。
+具体交错为A已观察authority A，绑定B但不观察B，再绑定C；此后same-source、较新B状态带真实B runtime ID。
+原代码的input与approve/reject/answer实际发送给C，interrupt/stop实际调用C，
+设置wire target更直接混合 runtimeSessionId=C 与 authorityGeneration=B。
+不是仅靠canMutate getter判定，也没有依赖不同source或时间旧提前排除交错。
+
+八项正向/反向保护PASS：当前C完整authority恢复public发送/控制/settings、
+匹配ID但缺authority仍不可写、旧V2缺新增字段可用、legacy idle fallback、
+Desktop无Bridge ID的detach，以及durable settings独立target。
+后者无runtimeSessionId/authorityGeneration，不借runtime权限，不应被本批一起阻断。
+
+正确结果依据decisions的handle+authority精确目标原则，而不是照抄现有输出。
+下一修复只在原status权限接纳接点拒绝已知runtime身份矛盾，复用原撤权路径与后续getter/dispatch。
+不建立另一份runtime身份缓存，不把可选ID当authority，保留无字段旧组合的原规则与有限证明能力。
+这批先提交red checkpoint；它不是可运行候选。green、完整门禁与固定输入复核另记。
