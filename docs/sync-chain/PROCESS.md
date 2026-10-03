@@ -1713,3 +1713,17 @@ Root拥有测试与最终判断。测试及策略接受此时NOT_RUN，不能把
 独立producer梳理发现同public runtime ID的process replacement可轮换opaque authority，
 因此不能仅凭本地binding是否变化判断R47。此事实与最小组合gate将写入QUEUE-AUTHORITY-ENTRY；
 首个新黑盒仍只证明未观察authority的合法等待，不证明replacement/capacity组合或其全部策略。
+
+## E068 — 初始化屏障后组合通过，canonical交接再补真实提交屏障
+
+`8f671f4fdc2acdab29bc57d909e9ae2d14f19438` clean：
+`c1f-final-ready-receivers-and-authority-contracts` 68 PASS，0 / 36.921秒；
+目标analyze无诊断，0 / 20.253秒；format单文件0 changed，0 / 0.489秒。
+没有重跑完整Mobile/Bridge，完整3396/4仍归属E064，新增用例只按自身证据计数。
+
+Root进一步发现测试只在mount后load canonical一次；status/overlay已接纳仍不能证明后续timeline已提交。
+尽管组合通过，这个等待条件还可能依赖Provider/磁盘快路径，不能扩大接受。
+在emit前订阅原syncUpdates的timeline通知，经真实SQL read验证目标assistant ID才完成；
+与control/overlay共同join，挂载状态观察器的gate不变，原10秒期限及全部业务断言保留。
+这只是新测试的因果屏障修正，未修改生产receiver、SQL写入、原七黑盒、Bridge或依赖。
+新的冻结输入、同组合与静态复查另记；原67/1 FAIL和两份green收据都保留。

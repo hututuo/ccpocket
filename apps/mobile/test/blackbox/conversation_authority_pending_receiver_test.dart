@@ -236,11 +236,37 @@ void main() {
                       message.message.id == 'assistant-authority-pending';
                 })
                 .timeout(const Duration(seconds: 10));
+            final canonicalFuture = sync.syncUpdates
+                .where(
+                  (update) =>
+                      update.kind == ConversationSyncCacheUpdateKind.timeline &&
+                      update.provider == 'codex' &&
+                      update.providerSessionId == threadId,
+                )
+                .asyncMap(
+                  (_) => repository.loadConversationWindow(
+                    target: target(),
+                    provider: 'codex',
+                    providerSessionId: threadId,
+                  ),
+                )
+                .firstWhere(
+                  (window) =>
+                      window != null &&
+                      window.entries.any((entry) {
+                        final message = entry.decodeMessage();
+                        return message is AssistantServerMessage &&
+                            message.message.id == 'assistant-authority-pending';
+                      }),
+                )
+                .timeout(const Duration(seconds: 10));
             final delivered = await Future.wait<Object>([
               emitSegment().then((_) => true),
               overlayFuture,
+              canonicalFuture.then((window) => window!),
             ]);
             final overlay = delivered[1] as ConversationSyncV2EventMessage;
+            final canonical = delivered[2] as ConversationHotWindowSnapshot;
             await Future<void>.delayed(Duration.zero);
             await waitForProjection(() {
               final status =
@@ -303,13 +329,7 @@ void main() {
               'assistantIds': assistantIds(),
               'runtimeProjection': chat.diagnosticRuntimeProjection,
             });
-            final canonical = await repository.loadConversationWindow(
-              target: target(),
-              provider: 'codex',
-              providerSessionId: threadId,
-            );
-            expect(canonical, isNotNull);
-            expect(canonical!.entries, hasLength(2));
+            expect(canonical.entries, hasLength(2));
             await mount(canonical, runtime.id);
             expect(
               tester.state(find.byType(DurableSessionPreviewUpdater)),
