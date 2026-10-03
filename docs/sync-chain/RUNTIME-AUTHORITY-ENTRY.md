@@ -2,8 +2,9 @@
 
 ## 起点与需要证明的行为
 
-产品仍为 C1c/C1d 完整门禁 `da3d3f6`；测试写法后续为 `2f95d6d0`。
-视觉终态分支已经核对远端 runtime ID，原 mutation lease 不在其验收范围（R48）。
+调查起点为 C1c/C1d 完整门禁 `da3d3f6`，测试写法后续为 `2f95d6d0`。
+当时视觉终态分支已经核对远端 runtime ID，原 mutation lease 尚不在其验收范围（R48）。
+本入口现已完成 C1e 的选定权限契约；当前完整输入为 `16196f05`，测试 import 后续为 `8178295d`。
 相关产品原则见 `decisions.md` 的 2026-08-02 runtime attachment changes：
 session_list handle 与 V2 authority 是两个事实，只有形成当前精确目标后才允许设置、停止、steer 或发送。
 
@@ -14,7 +15,8 @@ E061/E062 已由两种 capability 下的公开输入证明：16 项行为 FAIL /
 input/approval 实际目标为 C，stop/interrupt 实际调用 C，settings 混合 C runtime 与 B authority。
 已有合法C的settings owner会被B替换，合法C image dispatch lease也会被B取消。
 red时产品未改，失败日志及red checkpoint保留。E063在原接点窄修，26项新契约与相关313项PASS；
-最终完整门禁待候选冻结，不能把分项PASS写成控制全链验收。
+最终完整门禁见E064/E065：产品/测试16196f05全量3396 PASS / 4 SKIPPED及固定SHA review通过，
+8178295d仅删除unused test import，26项与完整analyze/format复查通过；不能写成控制全链验收。
 
 ## 唯一 owning path 与范围
 
@@ -48,3 +50,10 @@ red时产品未改，失败日志及red checkpoint保留。E063在原接点窄�
 
 queue-only旧/未来authority策略仍是R47，历史R29与095cab00失败归因仍未解决。
 源码门禁、真实Provider、设备、生产部署与发布继续各自报告。
+
+## 接手与回退
+
+精确门禁/继承关系见ACCEPTANCE.json。原12行guard仅持局部比较值，没有另一份authority/runtime缓存。
+回退产品16196f05时保留26项测试，先审阅E061–E065的red/正反向输入及unbound窄修。
+原terminal replacement用例明确的runtime ID保留，旧authority反向仍独立；不删断言或变更期限。
+若要收紧无字段旧组合，先证明其合法用途与新的协议/运行事实，再独立行为批；本修复未授权退役兼容路径。

@@ -24,7 +24,7 @@ main 已有未跟踪资料，不纳入本批、不覆盖；V4 是独立候选线
 | C1b | canonical prepare/admission/compose、后置提示确认及 pending focus 行为修复已完成 E041 | 十五项 canonical、十七项焦点保护及原页面因果 red/green；固定输入全量与独立复核通过 |
 | C1c | 终态/ticket/runtime身份及未知 activity 的选定修复已完成 E059/E060；历史R29仍未知 | 公开red→green、原七黑盒、完整门禁与固定SHA复核 |
 | C1d | quarantine map/bytes 单 owner 已完成 E059/E060 | 十三项public队列契约；结构保持原策略，完整门禁与取消接点复核；queue-only authority策略未审定 |
-| C1e | 已知runtime身份的原mutation接纳已公开red→窄修，保留未绑定只读与旧版/独立target保护，E061–E063 | 26项新契约/相关313项PASS；完整门禁与固定SHA复核待冻结。无ID远端归属仍R49 |
+| C1e | 已知runtime身份的原mutation接纳公开red→窄修已完成，保留未绑定只读与旧版/独立target保护，E065 | 26项新契约、完整3396/4、最终静态复查与固定SHA review通过；无ID远端归属仍R49 |
 | C2 | 按领域逐批抽 Bridge handler | 连接、认证、序列、权限归属不重复实现 |
 | D | 按调用/版本矩阵退役旧分支，更新唯一文档入口 | 确认路径无支持用途；删除对应状态与文档，而非只藏入口 |
 
@@ -36,7 +36,8 @@ C1b 已在原投影模块收拢 canonical 候选准备/接受，并保留 Cubit 
 [RUNTIME-ITEM-BOUNDARY](RUNTIME-ITEM-BOUNDARY.md)。下一步按 [R29-FOLD-ENTRY](R29-FOLD-ENTRY.md)
 保留旧折叠等待未知。C1c已证明独立终态契约与runtime身份缺口，C1d已迁移quarantine唯一owner；
 责任与缺口见RUNTIME-STATUS-IDENTITY / RUNTIME-QUEUE-ENTRY，最终门禁见E059/E060。
-下一批先证明原控制lease的runtime归属；queue-only authority和visual overflow仍不得当已审定策略迁移。
+已知runtime身份的原控制lease契约见RUNTIME-AUTHORITY-ENTRY / E065。
+下一批按QUEUE-AUTHORITY-ENTRY证明R47真实producer顺序；无ID远端归属和visual overflow仍不得当已审定策略迁移。
 当前默认并发四文件重放50 PASS不关闭旧失败；
 运行/展示链未据本次全量 PASS 整体验收。
 后续大类不会在同一批重写。

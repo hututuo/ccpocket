@@ -5,15 +5,15 @@
 - 时间：2026-10-03（Asia/Shanghai；此前条目保留当时记录）。
 - 分支：`codex/sync-chain-extraction-20261001`。
 - 起始 SHA：`930f1267e949c6cf2095761cc71c43cca08c6dc3`。
-- 阶段：A0–A3 / B1、B2、C1a、C1b、C1c/C1d 的选定接缝已完成源码门禁；C1e 已由公开实际发送/stop/interrupt证明旧runtime权限混用，保存red后窄修，尚不搬visual pending。
-- 最新完整门禁产品/测试 SHA：`da3d3f610c4507ad15c501a9c8c7ffeceb143dac`，身份、置信度、future turn 行为与队列结构分别提交。
-- 仅测试写法后续 SHA：`2f95d6d03e2b371c9eb7f8283eeaa76eec048808`，产品/依赖/黑盒 tree 不变；相关 40 项及完整静态分析另查。
-- 最新全量 Mobile 3370 PASS / 4 SKIPPED（--concurrency=1），Bridge 2546 PASS / 1 SKIPPED；build/typecheck/格式通过，继承与重跑分别登记。
+- 阶段：A0–A3 / B1、B2、C1a、C1b、C1c/C1d 与 C1e 的选定接缝已完成源码门禁；下一入口是 R47 的实际生产/消费顺序，尚不搬 visual pending。
+- 最新完整门禁产品/测试 SHA：`16196f05bf60943c1ebbc49475353a7b085fa1a4`；C1e 在原status接点拒绝已知不同runtime，不新增权限owner。
+- 仅测试import后续 SHA：`8178295d18f25a1cafc8d73fb039e2f664065ba9`，产品/依赖/黑盒tree不变；26项及完整静态分析另查。
+- 最新全量 Mobile 3396 PASS / 4 SKIPPED（--concurrency=1），Bridge 2546 PASS / 1 SKIPPED按相同tree继承E059；build/typecheck/格式通过，继承与重跑分别登记。
 - 最终 analyze 0 error/warning，1017 既有 info 完整文本逐项无新增；固定产品 SHA 独立复核无本次新增 P0–P2。
 - R35 pending focus 缺陷已确定性旧 Service red → 窄修 → 相同原页面 green，关闭选定交错；旧两次 FAIL 与恢复收据保留。
 - C1c `095cab00` clean 全量 3344 PASS / 4 SKIPPED / 1 FAIL，不是可验收候选；新 R40 两项 red 和诊断见 E049。
-- 已接受最新门禁证据见 E059/E060；red→green、提交索引与回退见 E043–E060。
-- R47 queue-only authority 留存为旧策略未审定；R48 原控制lease的已知runtime身份不匹配已由E061行为red证明，不据视觉修复宣称控制链验收。
+- 已接受最新门禁证据见E064/E065及ACCEPTANCE.json；C1e red→green与回退见E061–E065。
+- R48已知runtime身份的控制接纳选定契约闭合；R47 queue-only策略及R49无字段旧组合的完整远端归属仍未验收，不据此宣称控制全链正确。
 - E024 的历史并发折叠等待 FAIL 尚未归属；当前同四文件默认并发 50 PASS，不能据此关闭旧失败或宣称设备/运行链验收。
 - 真实 Provider、模拟器/真机、生产 Bridge、云 CI、OTA/发布 NOT_RUN；原生 UI 自动化工具缺失为 BLOCKED。
 - 最新提交与验证身份在后续条目登记；不能从本节推断部署状态。
@@ -1636,3 +1636,34 @@ Node22 noEmit继承c1d-final-bridge-typecheck-corrected；build继承E053相同B
 真实Provider、设备、生产、CI、OTA/签名安装/stable/release仍分别NOT_RUN；原生UI工具不可用为BLOCKED。
 下批queue-only authority生产/消费顺序只读草稿另存c1e-next-boundary-draft.md，
 先证明真实producer可达顺序再定策略，不照抄UUID不同就应清空/等待的现状。
+
+## E065 — C1e 最终静态复查、源码门禁接受与下批证据入口
+
+仅删除unused test import后的clean输入 `8178295d18f25a1cafc8d73fb039e2f664065ba9`：
+
+| 收据 | 结果 | 退出码 / 时长 |
+|---|---|---|
+| c1e-style-authority-contracts | 原26项新权限契约PASS，无断言或输入修改 | 0 / 3.235秒 |
+| c1e-style-full-analyze | 0 error/warning、1017既有info | 0 / 14.963秒 |
+| c1e-style-format | 单个测试文件0 changed | 0 / 0.525秒 |
+
+`c1e-style-analysis-comparison.json`核对E041完整诊断文本、续行及重复计数，新增/消除均空。
+`c1e-style-input-identity.json`核对lib、Bridge、四个依赖文件与blackbox tree均与完整QA的`16196f05`一致。
+两个版本间只有unused import与过程账本改变，所以全量3396/4仍准确归属E064的冻结输入，
+没有声称在样式SHA重跑全量。原analyze退出2及所有red/fixture错误日志保留。
+
+C1e选定源码门禁接受：已知attachment身份矛盾的早期拒绝、合法C权限/image lease保留、
+unbound只读与旧组合/durable target兼容保护共同闭合；固定SHA独立复核无本次新增P0–P2。
+ACCEPTANCE.json记录每项门禁的实际执行SHA、继承关系、收据/日志hash、计数与独立NOT_RUN/BLOCKED状态。
+后续文档提交只改变交接入口，不能冒充新产品/新测试运行。
+
+回退顺序：E061 `4d7cae87` 初始red、E062 `ece797f5`扩充red都不是运行候选；
+产品修复为`16196f05`，测试import复查为`8178295d`。
+撤销产品12行guard时保留26项public保护；未绑定只读反向不能丢失。
+原terminal fixture明确的replacement runtime ID保持，正文/turn/断言不回退成矛盾输入以绕过身份门禁。
+Bridge status身份是C1c/C1e的必要事实，若移除字段须同时重新评估两处依赖它的资格，不能保留修复声明。
+
+下一入口QUEUE-AUTHORITY-ENTRY仅包含已核对的producer/sequencing/queue事实和有限gate的证明次序，
+没有改R47策略，也没有把两侧不同queue的预算/authority规则统一。
+无ID远端归属、visual256/257、历史R29/095cab00归因、真实Provider/设备/生产/CI/发布继续分别留未验收。
+README、PLAN、CHAIN-MAP、矩阵、RUNBOOK与各入口同步到本断点；原checkout与用户数据保持原状。

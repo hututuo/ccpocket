@@ -1,0 +1,169 @@
+{
+  "schemaVersion": 1,
+  "scope": "selected C1c/C1d/C1e source and fixture contracts; not whole runtime or release acceptance",
+  "branch": "codex/sync-chain-extraction-20261001",
+  "workspace": "/Users/developer/.codex/worktrees/sync-chain-20261001/ccpocket-compat",
+  "fullMobileAndReviewSha": "16196f05bf60943c1ebbc49475353a7b085fa1a4",
+  "testImportFollowupSha": "8178295d18f25a1cafc8d73fb039e2f664065ba9",
+  "productTree": "2391bf7ceeb69d589c37e8a70ac42ea7e1aaece1",
+  "bridgeTree": "61fda2bdb14f2325a96957186dcc6ac0ade3f4e6",
+  "gates": {
+    "mobileFull": {
+      "state": "PASS",
+      "receipt": "/Users/developer/AI agent/Codex/_tmp/ccpocket-sync-chain-20261001/c1e-final-full-mobile.json",
+      "receiptSha256": "0e747ea73a372d35210d41ffaa4f07db8c996711f910420a7d16dd0b443ef4ca",
+      "log": "/Users/developer/AI agent/Codex/_tmp/ccpocket-sync-chain-20261001/c1e-final-full-mobile.log",
+      "logSha256": "221530905a6f138ff91d0fe6fde21b0f421e0760b34e867a63d7df2a644abea6",
+      "executedSha": "16196f05bf60943c1ebbc49475353a7b085fa1a4",
+      "durationSeconds": 346.089,
+      "passed": 3396,
+      "skipped": 4,
+      "blackboxSelectedCases": 7,
+      "concurrency": 1,
+      "inherited": false,
+      "inputTrackedDiffSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "inputWasClean": true
+    },
+    "mobileStatic": {
+      "state": "PASS",
+      "receipt": "/Users/developer/AI agent/Codex/_tmp/ccpocket-sync-chain-20261001/c1e-style-full-analyze.json",
+      "receiptSha256": "794784f1ea094b02fad1db0c3ba339d615c70c6098d41c806d01fc2791b14c21",
+      "log": "/Users/developer/AI agent/Codex/_tmp/ccpocket-sync-chain-20261001/c1e-style-full-analyze.log",
+      "logSha256": "2c6bd371e7e3eef1ed2dc48d03c6e7d9084bb74d817786aa00c544b2e0338c88",
+      "executedSha": "8178295d18f25a1cafc8d73fb039e2f664065ba9",
+      "durationSeconds": 14.963,
+      "errors": 0,
+      "warnings": 0,
+      "existingInfo": 1017,
+      "newDiagnostics": 0,
+      "inherited": false,
+      "inputTrackedDiffSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "inputWasClean": true
+    },
+    "mobileTestImportFollowup": {
+      "state": "PASS",
+      "receipt": "/Users/developer/AI agent/Codex/_tmp/ccpocket-sync-chain-20261001/c1e-style-authority-contracts.json",
+      "receiptSha256": "d17b96a0e5abed8669c5ca66f8d974d847ad3c8a2a47c83aeb6065d8118d01a7",
+      "log": "/Users/developer/AI agent/Codex/_tmp/ccpocket-sync-chain-20261001/c1e-style-authority-contracts.log",
+      "logSha256": "c4a229fa870b8ff3bdaf98d5b4e001510c88f3762ae92adcdbb3b1f8aa7baa17",
+      "executedSha": "8178295d18f25a1cafc8d73fb039e2f664065ba9",
+      "durationSeconds": 3.235,
+      "passed": 26,
+      "skipped": 0,
+      "inherited": false,
+      "inputTrackedDiffSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "inputWasClean": true
+    },
+    "mobileFormat": {
+      "state": "PASS",
+      "receipt": "/Users/developer/AI agent/Codex/_tmp/ccpocket-sync-chain-20261001/c1e-final-format.json",
+      "receiptSha256": "df4d12dc454d688eafc218a6aa304621590451600066a76619a800cc19b34ce0",
+      "log": "/Users/developer/AI agent/Codex/_tmp/ccpocket-sync-chain-20261001/c1e-final-format.log",
+      "logSha256": "b8f67bd8cd3a40d9ada61c096c8c375e45c53c5830cedfa8b0097cfd14a03878",
+      "executedSha": "16196f05bf60943c1ebbc49475353a7b085fa1a4",
+      "durationSeconds": 0.528,
+      "files": 3,
+      "changed": 0,
+      "inherited": false,
+      "inputTrackedDiffSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "inputWasClean": true
+    },
+    "testImportFormat": {
+      "state": "PASS",
+      "receipt": "/Users/developer/AI agent/Codex/_tmp/ccpocket-sync-chain-20261001/c1e-style-format.json",
+      "receiptSha256": "c8c8c3d43be50f4753ff1db3cc314936f38d94515be807ffa6cfeb869bcd7259",
+      "log": "/Users/developer/AI agent/Codex/_tmp/ccpocket-sync-chain-20261001/c1e-style-format.log",
+      "logSha256": "ebf8691cd9669b02dd9d748aaf543551b337b2beb44f2d128dc7ffbfa0318f03",
+      "executedSha": "8178295d18f25a1cafc8d73fb039e2f664065ba9",
+      "durationSeconds": 0.525,
+      "files": 1,
+      "changed": 0,
+      "inherited": false,
+      "inputTrackedDiffSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "inputWasClean": true
+    },
+    "bridgeFull": {
+      "state": "PASS",
+      "receipt": "/Users/developer/AI agent/Codex/_tmp/ccpocket-sync-chain-20261001/c1d-final-full-bridge.json",
+      "receiptSha256": "c4803782bea09ffe0094e6d741eb29f549ece74f11d6684b7b98d69f091da176",
+      "log": "/Users/developer/AI agent/Codex/_tmp/ccpocket-sync-chain-20261001/c1d-final-full-bridge.log",
+      "logSha256": "36d64ad69604e95826b076f120509d07f87e30b4f9cfeade36832f4f9a55084c",
+      "executedSha": "da3d3f610c4507ad15c501a9c8c7ffeceb143dac",
+      "durationSeconds": 19.092,
+      "passed": 2546,
+      "skipped": 1,
+      "inherited": true,
+      "proof": "c1e-final-bridge-input-identity.json",
+      "inputTrackedDiffSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "inputWasClean": true
+    },
+    "bridgeTypecheck": {
+      "state": "PASS",
+      "receipt": "/Users/developer/AI agent/Codex/_tmp/ccpocket-sync-chain-20261001/c1d-final-bridge-typecheck-corrected.json",
+      "receiptSha256": "ab7ebb85ca6f7a9a10d84d943057fdefea312ed25d0809fabd3d3fb6b1420e60",
+      "log": "/Users/developer/AI agent/Codex/_tmp/ccpocket-sync-chain-20261001/c1d-final-bridge-typecheck-corrected.log",
+      "logSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "executedSha": "da3d3f610c4507ad15c501a9c8c7ffeceb143dac",
+      "durationSeconds": 3.814,
+      "inherited": true,
+      "proof": "c1e-final-bridge-input-identity.json",
+      "inputTrackedDiffSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "inputWasClean": true
+    },
+    "bridgeBuild": {
+      "state": "PASS",
+      "receipt": "/Users/developer/AI agent/Codex/_tmp/ccpocket-sync-chain-20261001/c1c-runtime-status-identity-build.json",
+      "receiptSha256": "a58f8b3411652d0f4dcef2ea2961420adda1c32b09d8365bc500ebb79c937a8e",
+      "log": "/Users/developer/AI agent/Codex/_tmp/ccpocket-sync-chain-20261001/c1c-runtime-status-identity-build.log",
+      "logSha256": "b96ff7dbf47edbc8285be9858cb80c6781c35fd03d1ac9eb8554f99630cbc0f9",
+      "executedSha": "ac4d72fc10081f37dada742e1dd38b6261d487fb",
+      "durationSeconds": 5.769,
+      "inherited": true,
+      "proof": "c1e-final-bridge-input-identity.json",
+      "inputTrackedDiffSha256": "0ea27cc8b00381301ef5e30e1aaebb440ff3ff11b8c61c35d936457fec85e4c5",
+      "inputWasClean": false,
+      "committedBuildInputSha": "1ee3820736d4f7b27c1ad8caa8efa5537013289a",
+      "buildTree": "61fda2bdb14f2325a96957186dcc6ac0ade3f4e6",
+      "inputIdentityExplanation": "Build ran before commit: executed HEAD plus recorded tracked diff equals the source/test patch later committed in 1ee38207; Bridge and dependency tree match current input."
+    },
+    "independentReview": {
+      "state": "PASS",
+      "executedSha": "16196f05bf60943c1ebbc49475353a7b085fa1a4",
+      "newP0P1P2": 0,
+      "readOnly": true,
+      "model": "gpt-6-luna",
+      "reasoningEffort": "max",
+      "evidence": "/Users/developer/AI agent/Codex/_tmp/ccpocket-sync-chain-20261001/c1e-final-independent-review.json"
+    },
+    "realProvider": {
+      "state": "NOT_RUN"
+    },
+    "simulatorAndDevice": {
+      "state": "NOT_RUN"
+    },
+    "nativeUiAutomation": {
+      "state": "BLOCKED",
+      "reason": "native Dart/Marionette tools unavailable in current tool inventory"
+    },
+    "cloudCi": {
+      "state": "NOT_RUN"
+    },
+    "productionDeployment": {
+      "state": "NOT_RUN"
+    },
+    "otaSigningInstallStableRelease": {
+      "state": "NOT_RUN"
+    }
+  },
+  "retainedFailures": [
+    "historical R29 waiting failure causality unknown",
+    "095cab00 full run failure causality unknown",
+    "c1e-final-full-analyze unused test import warnings fixed only in subsequent input"
+  ],
+  "unacceptedPolicies": [
+    "R45 visual pending 256/257",
+    "R47 queue-only old versus future authority",
+    "R49 remote ownership without optional runtime ID"
+  ],
+  "evidenceDirectory": "/Users/developer/AI agent/Codex/_tmp/ccpocket-sync-chain-20261001"
+}

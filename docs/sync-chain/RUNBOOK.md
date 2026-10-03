@@ -34,6 +34,7 @@
 | runtime status attachment 身份生产、失效转换与持久 JSON | 原 Bridge statusFromRuntime / Dart protocol / Repository status JSON | R41/R42；不能把runtime ID当authority |
 | stream 接受revision、socket终态ticket与新视觉清理 | StreamingStateCubit / 原 Cubit status 接点 | R37–R42/R46；旧mutation lease另看R48 |
 | quarantine map/bytes、FIFO快照、容量拒绝、remove/clear | runtime_overlay_quarantine.dart | R43/R44；admission/apply/accepted IDs仍在原Cubit，R47策略未审定 |
+| 拒绝已知不同runtime的status，不替换合法当前权限 | 原Cubit.updateDetachedProviderStatus，source/provider/thread后、时间/签名前 | R48；26项公开权限保护；缺字段旧组合R49另证 |
 | runtime 完成、stream 关闭与实际 layout | 原 Bridge/Service/Cubit streaming handler / layout | R09/R29/R35/R37；历史R29归因仍未知 |
 
 调度器只接受不可变的身份/观察值和三个窄回调：判断当前操作、执行既有修复、重新观察缓存。
@@ -129,6 +130,7 @@ cd apps/mobile
 "$CCPOCKET_FLUTTER_BIN" test --no-pub --reporter expanded --concurrency=1 \
   test/detached_terminal_streaming_test.dart \
   test/detached_runtime_overlay_queue_test.dart \
+  test/detached_runtime_authority_test.dart \
   test/models/conversation_sync_v2_protocol_test.dart \
   test/features/session_list/cache/session_catalog_cache_repository_test.dart
 "$CCPOCKET_FLUTTER_BIN" test --no-pub --reporter expanded --concurrency=1 \
@@ -168,6 +170,9 @@ R29 原四文件组合在当前 clean adf337ea 默认并发 50 PASS，仅证明�
 原七黑盒及固定 SHA 独立复核通过（E059）。Bridge build 由 E053 相同 tree 继承；noEmit 是实际重跑。
 2f95d6d0 仅测试写法复查，40 项及完整 analyze/format 通过，1017 info 完整文本比对无新增（E060）。
 产品、依赖和黑盒 tree 未变化；保留完整 SHA 与样式 SHA 的区别，不虚构第二次全量。
+最新C1e完整输入16196f05：3396 PASS / 4 SKIPPED、固定SHA review通过；Bridge tree不变继承E059。
+8178295d仅删unused test import，26项与完整analyze/format另查，0 error/warning、1017既有info逐项无新增。
+完整收据与警告FAIL保留见E064/E065；精确hash及继承/NOT_RUN/BLOCKED见ACCEPTANCE.json。
 页面失败快照含 SQL、Cubit、renderedText/disclosure，跨 await 的快照不是原子快照。
 runtime-overlay-origin 在 Provider 发射回调采样，早于生产 sessionMessage，不代替其实际判定事实。
 焦点责任与重放见 RUNTIME-ITEM-BOUNDARY；旧折叠等待的下一步见 R29-FOLD-ENTRY。
@@ -208,7 +213,9 @@ C1c/C1d 的身份 red ac4d72fc → 修复 1ee38207，future-turn red 4b59aee7 �
 回退 da3d3f6 须迁回完整 map/bytes/add/remove/clear，并保留此前行为保护和原 reset/flush/close 出口。
 若撤销可选 runtime status 身份，也要处理依赖它的新清理条件；不能保留不成立的验收声明。
 authority 清理反向测试仅覆盖已有 visible owner，queue-only waiting 仍按 R47 单独取证。
-下一批先梳理原 mutation lease 的远端身份归属与公开发送校验（R48），再确定性证明疑点。
+C1e已按26项public输入窄修已知remote runtime矛盾；产品16196f05与测试import8178295d分开审阅。
+回退产品保留旧B拒绝、合法C owner/image lease、unbound只读与旧组合/durable target断言；不把red checkpoint运行。
+无字段旧组合完整归属仍R49。下一批按QUEUE-AUTHORITY-ENTRY证明R47的真实producer/status/SQL/page顺序再定策略。
 [R29-FOLD-ENTRY](R29-FOLD-ENTRY.md) 继续登记旧观察：没有输入/接受/渲染的因果证据便留未知。
 visual pending 的 256/257 策略未审定，不因 quarantine 完成就一起抽取。
 既有其他分页/控制路径的相似交错仍待各自证明，不从 older 两个出口的修正推断它们已经正确。

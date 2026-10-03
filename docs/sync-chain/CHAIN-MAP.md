@@ -124,7 +124,9 @@ RuntimeOverlayQuarantine独占pending map与bytes，最大32个event/64KiB编码
 authority mismatch清理要求已有visible tracking；queue-only不匹配且未证明旧的event仍隔离，策略见R47。
 visual pending的256/257策略仍在原Cubit，尚未审定，不借quarantine合同宣称正确。
 完整门禁与独立复核见E059/E060；保护、失败与未知边界见R37–R48及两份runtime入口。
-原mutation lease用本地generation/source接纳authority，尚未在新terminal身份修复中验证；R48单列。
+原mutation lease仍用generation/source/authority形成权限；C1e在其status入口先拒绝已绑定runtime与远端明确ID矛盾，
+防止误授予C、替换合法C或取消合法image lease。无binding只读、无ID旧组合与durable target保留；R48/R49分列。
+新比较不增加状态owner，source adoption保持原顺序；R47生产/消费顺序见QUEUE-AUTHORITY-ENTRY。
 
 ```mermaid
 flowchart LR

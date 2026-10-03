@@ -29,8 +29,8 @@ C1c 原候选在同一 socket 输出未改变时，用 source/local generation �
 字段可选，V2 event/capability 与现有 RPC 不改版；旧客户端忽略新增字段。
 新客户端能读取没有字段的旧 Bridge 状态、保持原 completion 与 pending-turn validation。
 缺少身份时不授予本批新增的终态清理资格，不伪造匹配身份。
-旧 mutation lease 接纳机制未在本批重写；它的同源缓存归属风险仍需独立契约和门禁，
-不能把视觉清理修复当作控制权限全链验收。
+C1c没有重写旧mutation lease接纳；随后C1e以独立公开契约窄修已知runtime身份的同源缓存归属，
+见RUNTIME-AUTHORITY-ENTRY / E065。不能把这两批限定契约当控制权限全链验收，无ID旧组合仍R49。
 
 ## 执行与测试门禁
 
@@ -50,4 +50,4 @@ C1c 原候选在同一 socket 输出未改变时，用 source/local generation �
 完整产品/测试输入 `da3d3f6` 的 Mobile 3370 PASS / 4 SKIPPED、Bridge 2546 PASS / 1 SKIPPED，
 新 Bridge build、noEmit、原七黑盒及固定 SHA 独立复核通过（E059）。
 后续 `2f95d6d0` 只改测试 null-aware entry；40 项相关用例、格式、1017 既有诊断逐项复查通过（E060）。
-产品及黑盒 tree 未变。真实 Provider/设备与原 mutation lease 的控制归属仍分别未验收。
+产品及黑盒tree未变。C1e限定的控制身份门禁随后通过E065；真实Provider/设备及无ID远端归属仍未验收。

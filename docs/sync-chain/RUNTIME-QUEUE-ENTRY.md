@@ -82,7 +82,8 @@ map、bytes、remove、clear已一起迁移，原状态已删除；clear/flush/c
 文件：apps/mobile/lib/features/chat_session/state/runtime_overlay_quarantine.dart；不新增异步close/join。
 
 visual pending 暂不迁移；256/257 与 future terminal 策略未证明前不把两种 queue 做通用 coordinator。
-下一批先核对原 mutation lease 的 runtime 归属（R48）；queue-only authority 待单独取证（R47）。
+C1e已完成已知runtime身份的原mutation接纳契约（R48），缺字段的完整远端归属仍R49。
+下一批按[authority生产/消费入口](QUEUE-AUTHORITY-ENTRY.md)单独取证queue-only策略（R47）。
 每次结构提交保持原消息、容量、deadline 与拒绝行为；新增策略另起行为批。
 同输入的 public 契约、原七黑盒、全 Mobile/analyze/format、固定 SHA 独立复核及回退依赖共同验收。
 Bridge 或 fixture source 未改时用精确 Git tree/lock 对象继承既有门禁，不把继承写成重跑。
