@@ -149,7 +149,7 @@ try {
   function acknowledge(sequence) {
     client.send(JSON.stringify({
       type: "conversation_sync_ack", protocolVersion: 2,
-      requestId: `ack-${sequence}`, subscriptionId, sequence,
+      subscriptionId, sequence,
     }));
   }
   client.on("error", (error) => { clientError = error; });
@@ -244,6 +244,7 @@ try {
       s.runtimeSessionId === runtimeId && s.authorityGeneration === newAuthority && s.activeTurnId === turnId));
   assert.ok(matchingStatus, "Actual replacement status must be sequenced before its overlay");
   assert.equal(frames.filter((f) => f.event === "sync_failed").length, 0);
+  assert.equal(frames.filter((f) => f.errorCode === "unsupported_message").length, 0);
   stages.push({ stage: "ack-drained", runtimeId, oldAuthority, newAuthority,
     statusSequence: matchingStatus.sequence, overlaySequence: overlays[0].sequence,
     outstandingBytes: state.outstandingBytes, queuedBytes: state.queuedBytes,

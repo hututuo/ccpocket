@@ -1834,3 +1834,18 @@ new B event也等待；只发送public累计ACK释放budget。正确结果为旧
 新增harness在自建child中由已安装tsx加载实际TypeScript源码，不依赖换dist；独立Provider仍为fixture。
 它不替换真实Mobile receiver；本合同即使PASS也只补Bridge组合，R47的Mobile旧A/未观察新B仍须下一合同。
 先冻结并运行该实际组合；若有失败，区分fixture启动/合同与产品行为，保留原日志再修，未运行前为NOT_RUN。
+
+## E075 — 组合已到真实替换点，首次ACK格式不合法的fixture失败
+
+`19b2939f30b4ebb150e911e9aa04bc346f4790ae` clean：
+`c1g-first-authority-replacement` 0 PASS / 1 FAIL，1 / 11.469秒，等待ACK后新overlay超时。
+原日志明确 `[ws] Unsupported message: conversation_sync_ack`；本fixture错误地给ACK附加requestId。
+原protocol parser只允许type/protocolVersion/subscriptionId/sequence，不能用handler直调绕过这个验证。
+此FAIL归属新fixture输入，不是产品authority缺陷；收据和实际RPC/wire轨迹保留。
+
+失败前真实gate已达：outstanding1,005,733 bytes、queued1,050,738 bytes、capacityWaiter1；
+old A overlay已pending，原replaceCodexSession提交同public runtime ID的新process及不同actual UUID authority，
+new B overlay也pending。没有mock authority、手造pending map或改原预算；由于非法ACK，该输入不计接受。
+只删除fixture ACK的多余requestId，另断言无unsupported_message；所有业务/容量/queue归零断言及原期限保持。
+语法检查0 / 0.110秒、Bridge noEmit0 / 3.494秒只能说明对应静态门禁，不覆盖本次行为FAIL。
+固定修正输入后重新跑实际组合，独立复核及完整Bridge另记。
