@@ -93,10 +93,14 @@ current bridgeRuntime lease与同source/subscription/runtime且严格后继的re
 suspend撤projection/authority lease，票本身不能恢复权限；null/source/runtime的原状态时间失效接点同时清票。
 四条实际receiver的28份trace及295个既有Bridge文件不变证明见supplementalC1h。
 
-## 下一C1i与R47剩余证明
+## C1i自身await-after已闭合与R47剩余证明
 
-先区分原sendPendingRuntimeOverlays的capacity await已经进入，与C1g的catalog发送gate；
-在自身await期间实际replacement，public ACK恢复后同时检查旧A、新B、完整status顺序及关闭前budget。
+固定d67c8b92以精确A payload/resolver identity和原Promise证明已进入sendPendingRuntimeOverlays自身capacity await。
+原60,000字节Provider item形成61,014字节frame，加原outstanding/queued超过2MiB；public ACK只逐帧推进到该原wait。
+实际replacement后A resolver/Promise仍pending、投影已B而pendingStatusState仍A；再公开ACK返回时snapshot确为B。
+旧A退休、B status220→overlay221单次且close前预算0；删除原post-await重查直接FAIL，hash恢复/2项/full2548/1通过（R56 / E085）。
+仅测试harness/新增test，生产重查不改；35份trace hash/只读review/精确输入见supplementalC1i。
+下一C1j继续R47的cached-only与跨订阅：
 另审无receipt的SQL close/reopen/cached-only、同源订阅替换与未来event；跨stream sequence不能比较。
 缺票不能虚构顺序或降级成>=时间比较，合法未来事件不能为清队列全部删除；先对正确可判定行为留red，再在原owner修。
 R47完整策略仍NOT_RUN；C2结构迁移、R45 visual策略与R49无ID远端归属不得借本批PASS推进。

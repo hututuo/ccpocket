@@ -6,7 +6,10 @@ C1h已将自然相等时间下滞留的旧runtime事件证明为red，再在原S
 实际SQL提交顺序由纯本地receipt沿原对象传到原页面，不改JSON、数据库、协议或另造队列。
 原SessionList/Updater/Repository、既有tests/fixture和依赖不变；仅隔离分支本地提交。
 最新范围/回退见[过程E083](PROCESS.md#e083--c1h固定输入完整接受与真实相等时钟green)、[操作说明](RUNBOOK.md)、[精确门禁](ACCEPTANCE.json)。
-剩余R47完整策略、R45/R49及历史失败归因仍开放；真实Provider/设备/部署/发布未验收。
+随后C1i冻结d67c8b92：完整Bridge **2548 PASS / 1 SKIPPED**，实际overlay自身容量await期间同ID替换，
+原Promise返回后重查正确；删重查的隔离实验直接FAIL、源码hash恢复后2项PASS。原生产TS/全部Mobile输入不变。
+最新生产await证据见[过程E085](PROCESS.md#e085--c1i自身await取证故障检出与完整bridge接受)；Mobile3412/4仍精确归4e6d3d4a。
+剩余R47 cached-only/跨订阅完整策略、R45/R49及历史失败归因仍开放；真实Provider/设备/部署/发布未验收。
 
 本轮从 `930f1267e949c6cf2095761cc71c43cca08c6dc3` 建立独立分支
 `codex/sync-chain-extraction-20261001`。首先验证选定短闭环，再抽取已证明边界的职责。
@@ -83,7 +86,7 @@ C1h在b493e9ea保存自然equal时钟消费red（R54）：B已被原页面接纳
 随后8c5002a9十项public合同7/3 red，原Service/status DTO/Cubit窄修4e6d3d4a后83项/完整3412/4 PASS；
 真实相等时钟green、同页合法canonical及未来事件保护已核对（R54/R55），保留全部red；定位/修复/接受见E078–E083。
 后续[authority生产/消费入口](QUEUE-AUTHORITY-ENTRY.md)保留合法未来事件，携带原Service真实SQL commit顺序证明旧A退休；
-R47完整策略、overlay自身await后的replacement、无runtime字段归属及visual pending 256/257仍未验收。
+C1i另闭合overlay自身await后的replacement（R56 / E085），未改生产重查；R47 cached-only/跨订阅完整策略、无runtime字段归属及visual pending 256/257仍未验收。
 
 接手顺序：
 

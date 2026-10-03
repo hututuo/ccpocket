@@ -34,7 +34,8 @@ C1f另核对实际SessionManager可复用同public runtime ID替换CodexProcess�
 因此C1e的known-ID矛盾guard不能作为全部replacement证明；新R50仅验证状态尚未被页面观察时的合法等待。
 C1g仅在Bridge补实际同ID replacement与catalog capacity/public ACK组合（R52 / E077）；known-ID guard仍不证明Mobile新旧authority策略。
 C1h实际Mobile已收到A/尚未观察B的两窗口在4e6d3d4a闭合（R54），本地commit顺序公开反向保护另列R55。
-只有当前合法bridgeRuntime receipt取得新退休证明；cached-only/跨订阅、overlay自身await后替换及无ID远端归属仍R47/R49，见QUEUE-AUTHORITY-ENTRY。
+只有当前合法bridgeRuntime receipt取得新退休证明；C1i另证明原Bridge overlay自身await后替换正确（R56），未改生产。
+cached-only/跨订阅与无ID远端归属仍R47/R49，见QUEUE-AUTHORITY-ENTRY。
 没有新增字段的旧 V2 状态无法仅凭该字段完成远端归属证明，保留原规则及其证据边界。
 不在这批移植新协议、造第二个权限owner或重写Bridge控制RPC。
 已知不同runtime的status在签名/时间接受前拒绝，避免其驱动合法当前owner的退休。

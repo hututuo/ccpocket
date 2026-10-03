@@ -322,4 +322,27 @@ C1h接Mobile/SQL/原页面同ID替换，B刚替换尚无新notification与B真�
 单独撤4e6d3d4a可得到保留三项public red的行为基线，不应运行/部署；完整移除receipt需先适配Service/Cubit/API再处理8c5002a9。
 仅回退测试设施不等于撤销产品行为；既有helper/七黑盒/C1f没有依赖新harness。保留red与正向断言，每个适配在隔离分支复查。
 暂停投影只撤lease；文档不得声称它一定清receipt，票本身没有authority。cached-only/跨订阅仍保守，完整R47未接受。
-下一C1i先证明overlay自身capacity await-after replacement，并列审计无receipt/订阅切换；C2与visual pending迁移仍等待正确性证据。
+C1i现已证明overlay自身capacity await-after replacement（R56 / E085）；下一C1j审无receipt/订阅切换，C2与visual pending迁移仍等待正确性证据。
+
+## C1i自身overlay等待复跑与回退
+
+在packages/bridge使用前文CCPOCKET_NODE运行：
+
+```bash
+"$CCPOCKET_NODE" node_modules/vitest/vitest.mjs run \
+  src/local-features/conversation-authority-await-replacement.test.ts \
+  src/local-features/conversation-authority-replacement.test.ts
+"$CCPOCKET_NODE" node_modules/vitest/vitest.mjs run
+```
+
+固定d67c8b92的完整2548 PASS/1 SKIP、126 files PASS/1 SKIP、noEmit/语法及只读review通过。
+原C1g test读取默认catalog输出，新test子进程设CCPOCKET_REPLACEMENT_GATE=overlay；同一harness共享原owned RPC/Bridge/关闭流程。
+新增observer只匹配旧A payload和新增resolver、原样返回原Promise；public oldest-frame ACK负责推进到A-own wait，不改原budget/frame或调用私有send/drop。
+60,000字节实际item/frame61,014低于64KiB；actual replacement/B投影/原wait未settle各自断言，关闭前所有budget清零。
+移除post-await重查的临时实验直接FAIL（旧A+新B上wire），源码SHA256逐字节恢复且dist不变，恢复后2项PASS。
+全部收据、dirty diff/恢复hash、35份trace及独立review见supplementalC1i；旧catalog watcher首次timeout仍R53，不由本次完整绿解释原因。
+
+本批只修改conversation-authority-replacement-harness.mjs并新增conversation-authority-await-replacement.test.ts，原生产/Provider fixture/既有tests/全部Mobile输入不变。
+回退d67c8b92的测试部分不会移除C1h receipt产品修复；保留原catalog与新own-await正确性断言，不将临时坏策略应用到产品。
+Bridge build继承同原生产TS/依赖；Mobile full3412/4与83项仍精确归4e6d3d4a，不称本次重跑。
+强制child timeout后代进程树回收未独立验收；不触碰生产服务作为测试清理。下一C1j只补cached-only/订阅替换/未来authority证据，再决定原owner窄修。

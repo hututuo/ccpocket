@@ -5,17 +5,17 @@
 - 时间：2026-10-03（Asia/Shanghai；此前条目保留当时记录）。
 - 分支：`codex/sync-chain-extraction-20261001`；仅隔离worktree本地提交。
 - 起始SHA：`930f1267e949c6cf2095761cc71c43cca08c6dc3`。
-- 阶段：A0–A3/B1、B2、C1a–C1h的选定接缝已完成源码门禁；C1h关闭真实same-ID旧A消费与严格commit顺序合同R54/R55。
+- 阶段：A0–A3/B1、B2、C1a–C1i的选定接缝已完成源码门禁；C1h关闭真实消费/commit顺序R54/R55，C1i补原overlay自身await-after replacement的生产证明R56，未改产品。
 - 最新完整Mobile产品/测试输入：`4e6d3d4a82998016d018239d5b73cd6e1f46ed2d` clean；3412 PASS / 4 SKIPPED，348.327秒，concurrency=1。
 - 定向83项PASS（38.202秒）：10条真实接收链、3条owned启动失败清理、70条公开队列/权限/终态/commit顺序保护。
 - analyze 0 error/warning，1017既有info；severity/file/完整文本/code及重复数量比对8178295d无增减，忽略行列；5个改动Dart文件format 0 changed。
 - 固定4e6d3d4a的GPT-6 Luna/max只读复核无新增可证明P0–P2，未运行独立测试；E082关于suspend清票的文字已纠正。
 - C1h实际natural equal窗口中A仍pending1，B已SQL提交；原Updater接纳真实后继receipt后pending/bytes0，再在同一页面合法canonical A单次接替。
 - C1h仅三个原Mobile产品文件改动：Service在完整SQL/current fence后附本地顺序、status DTO只携带不序列化、原Cubit按严格同stream后继证明退休。原SessionList/Updater/Repository、Bridge生产源码/原tests/fixture/依赖均不变。
-- Bridge完整2547 PASS / 1 SKIPPED仍精确归911a4f60；C1h核对其中295个既有文件blob不变，仅新receiver harness，不伪造全Bridge重跑。build/typecheck继承同原生产/依赖输入，新harness语法另有实际收据。
+- 最新Bridge测试输入d67c8b92 clean：完整2548 PASS / 1 SKIPPED（18.904秒）、noEmit（3.139秒）与语法（0.135秒）通过，原catalog/新overlay-own gate均PASS；移除await后重查的敏感性直接FAIL，finally源码hash恢复后2项重放PASS（12.256秒）。原生产TS/依赖不变，build继承原输入；先前2547/1仍精确归911a4f60。
 - 本批fixture错误0/2、真实消费red1/1、公开顺序red7/3及先前所有FAIL完整保留；当前绿灯不覆盖历史R29、095cab00或R53 watcher timeout的未知直接原因。
 - 原C1e完整3396/4与import复查、C1f71项、C1g全量/敏感性/恢复分别保留历史输入；最新C1h门禁见E083和ACCEPTANCE.json的supplementalC1h。
-- 下一C1i先审实际overlay自身capacity await后的replacement及订阅切换/无receipt缓存的证明边界；R47完整策略、R45 visual 256/257、R49无ID旧组合仍未验收，不扩大到C2重写。
+- C1i原overlay自身await-after已闭合；下一C1j审订阅切换/无receipt缓存的证明边界。R47完整策略、R45 visual 256/257、R49无ID旧组合仍未验收，不扩大到C2重写。
 - 真实Provider、模拟器/真机、生产Bridge、云CI、OTA、签名安装/stable/发布NOT_RUN；原生UI工具缺失BLOCKED。原始checkout/修复checkout和生产服务未操作。
 
 ## E001 — 建立隔离执行与文档
@@ -2014,3 +2014,39 @@ R54实际两个消费窗口与R55十项公开顺序合同接受；完整R47仍�
 要求wait返回时已是B实际snapshot、旧A无wire且pending/bytes退休、新B完整status先于单次overlay、close前全部预算/等待者0。
 client ACK、原wait进入/返回、raw stdio、runtime origin与wire分别留trace；先冻结测试输入再运行，不从仅pending或catalog gate推断自身await。
 45秒owned child与60秒测试期限保持；强制timeout的后代进程树回收仍不扩张为已验收。正确结果未被实际证明前R56 NOT_RUN。
+
+## E085 — C1i自身await取证、故障检出与完整Bridge接受
+
+固定测试/harness输入 `d67c8b9205cd1de2e7bbb8ad9157a6adba8966e3` clean。
+`c1i-first-overlay-and-catalog`：2 PASS，0 / 12.329秒；新overlay-own与默认C1g catalog门禁均保留原断言。
+`c1i-final-full-bridge`：实际完整2548 PASS / 1 SKIPPED，126 files PASS / 1 SKIP，0 / 18.904秒；
+`c1i-final-bridge-typecheck`：0 / 3.139秒；`c1i-first-harness-syntax`：0 / 0.135秒。
+先完成固定源码只读review和完整门禁，再做隔离敏感性，未让review/test读取实验dirty输入。
+
+原non-async wrapper仅匹配actual A overlay调用，保存调用原方法时新增resolver identity，返回原Promise不改结果/预算/调度。
+完整真实轨迹：A 60,000字节原Provider item形成61,014字节估算frame（原64KiB接受）；
+原outstanding1,040,665、queued1,029,438，加A frame超过2MiB，A专属waiter1实际登记；
+此前A完整status41页最后sequence204已排队，不能以catalog waiter非空代替A-own await。
+逐帧公开ACK停止后，实际same-public-ID新process/opaque UUID B的statusProjection已经更新，pendingStatusState仍是A；
+原A resolver仍在同Set、Promise仍未settle，B actual item也pending。再次public ACK才使原wait返回true，返回时runtime snapshot确为B。
+原await后的sequenced/superseded重查退休A；B完整status sequence220先于唯一B overlay221。
+B实际wire时pending count/bytes0，最终outstanding/queued/pending bytes/waiters0且尚未close。
+默认catalog模式仍有41页B status164–204→overlay205，其合同和原期限未删。
+
+仅临时删原post-await sequenced/superseded重查块，`c1i-post-await-missing-recheck-mutant`按预期FAIL，1 / 1.941秒；
+actual wire错误为A旧205与B新222两条，正确预期仅B。不是等待超时或模拟authority，因此合同确能检出该缺口。
+实验dirty diff SHA256 `c296aebb6da5022bb956164685ccff12534650215e5dc888b8678463072c335d`；
+finally逐字节恢复conversation-sync-v2.ts SHA256 `728ab4d5b005aee220848cb274ba2634ff7917a5a32d335bb8ee36d942e6c659`且Git clean，dist hash不变。
+`c1i-final-restored-overlay-and-catalog`同clean输入2 PASS，0 / 12.256秒；原完整门禁输入与恢复后精确相同，不重复伪造全量。
+错误策略未提交/部署，恢复证明c1i-post-await-sensitivity-restoration.json；四条接受轨迹与一条mutant共35份trace hash见c1i-final-own-await-audit.json。
+
+固定d67c8b92 GPT-6 Luna/max只读复核无新增可证明P0–P2，未跑测试；
+核对resolver identity、same Promise、B投影/A pending status、public ACK、关闭前清零及default路径保留。
+强制timeout后代进程树回收仍是沿用的未验收边界，不新增相关完成声明。见c1i-final-independent-review.json。
+输入证明c1i-final-input-identity.json：4e6d3d4a的Mobile lib/test/依赖全部不变；只改既有测试harness并新增1个Bridge test，原生产TS/Provider fixture与所有既有Bridge tests不变。
+完整Mobile3412/4和83项仍精确属于4e6d3d4a，未重跑或加计本次Bridge测试；Bridge新全量是真实执行，build仅继承同原生产/依赖输入。
+
+R56接受的是原overlay自身await-after replacement；C1g catalog/R54 Mobile live receipt/R55公开顺序仍各自按历史证据保留。
+R47的无receipt cached-only/跨订阅与未来authority完整策略仍未接受，下一C1j先建立真实缓存重读/订阅替换合同，缺票不得虚构跨stream顺序。
+R45/R49、历史R29/095cab00/R53直接原因继续开放；真实Provider/设备/生产/云CI/OTA/签名安装/发布NOT_RUN，原生UI BLOCKED。
+本批产品未改，只在隔离分支本地提交测试/文档；原项目/修复checkout不操作，未merge/push/部署。

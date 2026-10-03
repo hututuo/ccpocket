@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "scope": "selected C1c–C1h source/fixture contracts; C1h live local SQL commit-order receipt and actual same-ID receiver acceptance; not whole runtime or release acceptance",
+  "scope": "selected C1c–C1i source/fixture contracts; C1h live local SQL commit-order receiver and C1i actual producer own-await replacement; not whole runtime or release acceptance",
   "branch": "codex/sync-chain-extraction-20261001",
   "workspace": "/Users/developer/.codex/worktrees/sync-chain-20261001/ccpocket-compat",
   "fullMobileAndReviewSha": "16196f05bf60943c1ebbc49475353a7b085fa1a4",
@@ -162,7 +162,7 @@
   ],
   "unacceptedPolicies": [
     "R45 visual pending 256/257",
-    "R47 whole old/future authority policy: cached-only without receipt, cross-subscription and overlay-specific await-after replacement remain unproved",
+    "R47 whole old/future authority policy: cached-only without receipt and cross-subscription remain unproved; selected own-await proven separately R56",
     "R49 remote ownership without optional runtime ID"
   ],
   "evidenceDirectory": "/Users/developer/AI agent/Codex/_tmp/ccpocket-sync-chain-20261001",
@@ -438,7 +438,7 @@
     ],
     "processEntries": "E066-E073"
   },
-  "bridgeTreeScope": "historical original product/fixture tree; subsequent accepted test/harness trees recorded in supplementalC1g and supplementalC1h",
+  "bridgeTreeScope": "historical original product/fixture tree; current test/harness inputs recorded in supplementalC1g/C1h/C1i with actual or inherited gates explicitly distinguished",
   "supplementalC1g": {
     "state": "PASS",
     "scope": "R52 actual same-public-ID process replacement while original catalog capacity waits, released by public cumulative ACK; Bridge only",
@@ -974,6 +974,178 @@
       "E081",
       "E082",
       "E083"
+    ]
+  },
+  "latestBridgeAcceptance": {
+    "testAndHarnessSha": "d67c8b9205cd1de2e7bbb8ad9157a6adba8966e3",
+    "supplement": "supplementalC1i",
+    "passed": 2548,
+    "skipped": 1
+  },
+  "supplementalC1i": {
+    "state": "PASS",
+    "scope": "actual producer old A own capacity await, same-ID B replacement, original public ACK and post-await recheck",
+    "testAndHarnessInputSha": "d67c8b9205cd1de2e7bbb8ad9157a6adba8966e3",
+    "productionSourceChanged": false,
+    "mobileProductOrTestChanged": false,
+    "changedTestHarnessPaths": [
+      "packages/bridge/scripts/conversation-authority-replacement-harness.mjs"
+    ],
+    "addedBridgeTestPaths": [
+      "packages/bridge/src/local-features/conversation-authority-await-replacement.test.ts"
+    ],
+    "dependencyChanged": false,
+    "fullBridgeRerun": true,
+    "fullMobileRerun": false,
+    "inputIdentity": {
+      "evidence": "/Users/developer/AI agent/Codex/_tmp/ccpocket-sync-chain-20261001/c1i-final-input-identity.json",
+      "evidenceSha256": "6e13a29481fb6e68fc33399c34ef61468ecd41441f23cc68e1603bf9f81d913f"
+    },
+    "gates": {
+      "bridgeFull": {
+        "state": "PASS",
+        "receipt": "/Users/developer/AI agent/Codex/_tmp/ccpocket-sync-chain-20261001/c1i-final-full-bridge.json",
+        "receiptSha256": "edcc0a063aed17dc3fd548e419dd9637fa51561a809c43d2bcb9faec85e44e00",
+        "log": "/Users/developer/AI agent/Codex/_tmp/ccpocket-sync-chain-20261001/c1i-final-full-bridge.log",
+        "logSha256": "60337a51d958e6573f1c81b91a03e18a9cf3da4d7cb2b9773766c03bf79e54f9",
+        "executedSha": "d67c8b9205cd1de2e7bbb8ad9157a6adba8966e3",
+        "durationSeconds": 18.904,
+        "exitCode": 0,
+        "inputTrackedDiffSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "inputWasClean": true,
+        "passed": 2548,
+        "skipped": 1,
+        "passedFiles": 126,
+        "skippedFiles": 1,
+        "inherited": false
+      },
+      "restoredSelected": {
+        "state": "PASS",
+        "receipt": "/Users/developer/AI agent/Codex/_tmp/ccpocket-sync-chain-20261001/c1i-final-restored-overlay-and-catalog.json",
+        "receiptSha256": "4ec88f1e065e2a2bdd1a15f2730d95ba4dc789d43a7c618829914ac450c9311f",
+        "log": "/Users/developer/AI agent/Codex/_tmp/ccpocket-sync-chain-20261001/c1i-final-restored-overlay-and-catalog.log",
+        "logSha256": "11d258de17689ffbf9317bf30c90aa899be660c9468128df041ac05b41c6c604",
+        "executedSha": "d67c8b9205cd1de2e7bbb8ad9157a6adba8966e3",
+        "durationSeconds": 12.256,
+        "exitCode": 0,
+        "inputTrackedDiffSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "inputWasClean": true,
+        "passed": 2,
+        "skipped": 0,
+        "inherited": false
+      },
+      "bridgeTypecheck": {
+        "state": "PASS",
+        "receipt": "/Users/developer/AI agent/Codex/_tmp/ccpocket-sync-chain-20261001/c1i-final-bridge-typecheck.json",
+        "receiptSha256": "0f9c09a705fdc094780a6bc0ba813573ee08513b33ebd7626e22bbcdc9b043b5",
+        "log": "/Users/developer/AI agent/Codex/_tmp/ccpocket-sync-chain-20261001/c1i-final-bridge-typecheck.log",
+        "logSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "executedSha": "d67c8b9205cd1de2e7bbb8ad9157a6adba8966e3",
+        "durationSeconds": 3.139,
+        "exitCode": 0,
+        "inputTrackedDiffSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "inputWasClean": true,
+        "inherited": false
+      },
+      "harnessSyntax": {
+        "state": "PASS",
+        "receipt": "/Users/developer/AI agent/Codex/_tmp/ccpocket-sync-chain-20261001/c1i-first-harness-syntax.json",
+        "receiptSha256": "b0eebeaa01da249b5f5a946b7f9f9e2bf55368dd844c38fd1e86199e642c9ea3",
+        "log": "/Users/developer/AI agent/Codex/_tmp/ccpocket-sync-chain-20261001/c1i-first-harness-syntax.log",
+        "logSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "executedSha": "d67c8b9205cd1de2e7bbb8ad9157a6adba8966e3",
+        "durationSeconds": 0.135,
+        "exitCode": 0,
+        "inputTrackedDiffSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "inputWasClean": true,
+        "inherited": false
+      },
+      "independentReview": {
+        "state": "PASS",
+        "executedSha": "d67c8b9205cd1de2e7bbb8ad9157a6adba8966e3",
+        "readOnly": true,
+        "testsRunByReviewer": false,
+        "evidence": "/Users/developer/AI agent/Codex/_tmp/ccpocket-sync-chain-20261001/c1i-final-independent-review.json",
+        "evidenceSha256": "2321a290f2f68251d9439c0702c9704b9992b282c20986ee15f62b98ab7d46df"
+      },
+      "mobileInherited": {
+        "state": "PASS",
+        "executedSha": "4e6d3d4a82998016d018239d5b73cd6e1f46ed2d",
+        "passed": 3412,
+        "skipped": 4,
+        "selectedPassed": 83,
+        "inherited": true,
+        "receiptReference": "supplementalC1h.gates.mobileFull",
+        "scope": "identical Mobile source/tests/dependencies and all Mobile-used fixture/harness files"
+      },
+      "bridgeBuildInherited": {
+        "state": "PASS",
+        "inherited": true,
+        "scope": "identical original production TS/build input and dependencies; exact historical gate retained"
+      }
+    },
+    "ownAwaitAudit": {
+      "state": "PASS",
+      "executedSha": "d67c8b9205cd1de2e7bbb8ad9157a6adba8966e3",
+      "acceptedRuns": 4,
+      "traceFiles": 35,
+      "evidence": "/Users/developer/AI agent/Codex/_tmp/ccpocket-sync-chain-20261001/c1i-final-own-await-audit.json",
+      "evidenceSha256": "bf6242d58975057a3946f2daeefca03cc33475ea769633f096907ff8d10d908f"
+    },
+    "sensitivity": {
+      "state": "PASS",
+      "experiment": {
+        "state": "FAIL",
+        "receipt": "/Users/developer/AI agent/Codex/_tmp/ccpocket-sync-chain-20261001/c1i-post-await-missing-recheck-mutant.json",
+        "receiptSha256": "a1d1beb13b9b6561c6536b739fd2989d4ddd55a6ce11378233efdae2f5193158",
+        "log": "/Users/developer/AI agent/Codex/_tmp/ccpocket-sync-chain-20261001/c1i-post-await-missing-recheck-mutant.log",
+        "logSha256": "b8f0a9e525d280ee0305b571b92e87274aa1cd50773508ff98888c2718e2b672",
+        "executedSha": "d67c8b9205cd1de2e7bbb8ad9157a6adba8966e3",
+        "durationSeconds": 1.941,
+        "exitCode": 1,
+        "inputTrackedDiffSha256": "c296aebb6da5022bb956164685ccff12534650215e5dc888b8678463072c335d",
+        "inputWasClean": false,
+        "expectedState": "FAIL",
+        "expectedExitCode": 1,
+        "expectedFailureObserved": true,
+        "failure": "expected only B overlay; actual old A sequence205 plus B222"
+      },
+      "restoration": {
+        "evidence": "/Users/developer/AI agent/Codex/_tmp/ccpocket-sync-chain-20261001/c1i-post-await-sensitivity-restoration.json",
+        "evidenceSha256": "427483ed50ff40df825362947818a48c8f62f9a3c00531cf4244d4594cdea04b"
+      },
+      "restoredProductSha256": "728ab4d5b005aee220848cb274ba2634ff7917a5a32d335bb8ee36d942e6c659",
+      "productRestored": true,
+      "committedOrDeployed": false
+    },
+    "retainedCandidateRuns": [
+      {
+        "state": "PASS",
+        "receipt": "/Users/developer/AI agent/Codex/_tmp/ccpocket-sync-chain-20261001/c1i-first-overlay-and-catalog.json",
+        "receiptSha256": "90c3735622e0b123b3cb9cb03b3022ceda50a324e8b80fa0c03a8b0603a9405e",
+        "log": "/Users/developer/AI agent/Codex/_tmp/ccpocket-sync-chain-20261001/c1i-first-overlay-and-catalog.log",
+        "logSha256": "769a920801cb2371fabc5057f522ed74f8f27c7c59a47b9f1853752c3039eda7",
+        "executedSha": "d67c8b9205cd1de2e7bbb8ad9157a6adba8966e3",
+        "durationSeconds": 12.329,
+        "exitCode": 0,
+        "inputTrackedDiffSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "inputWasClean": true,
+        "passed": 2,
+        "skipped": 0,
+        "scope": "first fixed input both original catalog and A-own-overlay gates"
+      }
+    ],
+    "notAccepted": [
+      "R47 cached-only receiptless/cross-subscription and whole future authority policy",
+      "R45 visual256/257",
+      "R49 optional runtime ID missing remote ownership",
+      "historical R29/095cab00/R53 direct causality",
+      "forced-timeout descendant process-tree cleanup",
+      "real Provider/simulator/device/production/cloud CI/deployment/OTA/sign/install/stable/release"
+    ],
+    "processEntries": [
+      "E084",
+      "E085"
     ]
   }
 }

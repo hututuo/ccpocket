@@ -213,3 +213,12 @@ E077 / ACCEPTANCE.json记录本次全量、类型/语法、只读review、五份
 receipt不是wire sent、ACK或墙钟；只有真实SQL提交后才生成，不拥有业务authority，也不持久化第二份状态。
 cached-only/旧订阅不能取得本stream顺序证明，保留原保守规则。suspend撤lease，null/source/runtime失效清票。
 Bridge生产、原Mobile测试/SessionList/Updater/Repository与依赖不变；完整R47/R45/R49与设备/真实Provider仍未验收。
+
+## C1i：pending不是自身await，await返回还须重查
+
+原sendPendingRuntimeOverlays在status序列后调用waitForOutboundCapacity；它与catalog/status共享waiter Set。
+测试只观察原A payload调用新增的resolver identity，非async wrapper返回同一原Promise，不拥有gate或改变预算。
+A自身wait实际已进入、resolver/Promise保持pending，才触发原same-ID replacement及实际B item；放行前statusProjection B/pendingStatusState A分别取证。
+public累计ACK负责恢复，原wait返回后原sequenced/superseded重查退休A。B完整status先于单次overlay，关闭前pending/budget/waiter0。
+固定d67c8b92 full2548/1与移除post-await重查直接FAIL→hash恢复/2项PASS，35份trace及固定review见E085/supplementalC1i。
+原生产TS/依赖与全部Mobile输入不变；Mobile3412/4仍归4e6d3d4a。R47 cached-only/跨订阅、R45/R49与设备/真实Provider仍未验收。
