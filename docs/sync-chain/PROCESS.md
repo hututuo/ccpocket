@@ -1952,3 +1952,17 @@ receipt不由fromJson读取、toJson不写出，避免wire/缓存JSON伪造本�
 本阶段消费者未接receipt，应先保留选定red，不将字段声明当修复。
 真实receiver另在无新B item lane恢复挂载已捕获的合法A canonical window，要求同一页面A单次且无runtime/pending overlay。
 这是补齐两lane历史呈现证明，不放宽已有retirement断言；产品修复待下一独立提交。
+
+## E082 — 原status对象携带commit顺序的窄修
+
+8c5002a9 clean公开顺序合同7 PASS / 3 FAIL，1 / 2.493秒；失败为equal旧event退休、duplicate status新receipt重查及旧receipt覆盖当前authority。
+未来authority正向、缺receipt/跨source/跨subscription/同序号、null reset、wire/缓存JSON不带receipt保护PASS，red收据完整保留。
+
+原Service仅在完整status batch真实SQL提交且current fence通过后，用本地不可变receipt复制status值：source/subscription/最后commit sequence。
+原SessionList/Updater无需改，status JSON、SQLite schema、Bridge协议/生产源码与预算不变；SQL重读/旧路径没有receipt便保守沿旧规则。
+Cubit只接纳loaded、authoritative bridgeRuntime且实际当前runtime/source匹配的本地receipt；同stream旧/重复receipt不替代当前owner。
+exact authority+turn先apply；不匹配事件若同source/subscription的当前合法receipt严格后继则退休，未来event不被旧receipt删除。
+原timestamp严格isAfter保留；business duplicate但receipt更晚时仅更新原状态证据并flush，不重复推进UI/控制状态。
+所有原null/source/runtime/suspend状态时间失效出口同时清receipt；没有第二个queue/map/可排序UUID缓存。
+诊断增加当前receipt subscription/sequence，用真实receiver trace核对，不将缺receipt的cached-only路径宣称已证明equal顺序。
+接下来固定产品/测试输入，真实双窗口、十项public顺序/71项原保护、完整Mobile/analyze/format与固定源码只读review分别登记。

@@ -2696,7 +2696,19 @@ class ConversationContentSyncService with WidgetsBindingObserver {
     return ConversationSyncCacheUpdate(
       kind: ConversationSyncCacheUpdateKind.status,
       targetFingerprint: target.fingerprint,
-      statusChanges: List.unmodifiable(changes),
+      // The complete batch is already committed and still current. Carry its
+      // local order through the original status projection; JSON stays intact.
+      statusChanges: List.unmodifiable(
+        changes.map(
+          (status) => status.withCommitReceipt(
+            ConversationSyncV2CommitReceipt(
+              sourceFingerprint: target.fingerprint,
+              subscriptionId: event.subscriptionId,
+              sequence: event.sequence,
+            ),
+          ),
+        ),
+      ),
       pageIndex: stage.pageCount - 1,
       pageCount: stage.pageCount,
     );

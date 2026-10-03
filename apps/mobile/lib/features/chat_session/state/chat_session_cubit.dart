@@ -327,6 +327,9 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
     'executionHost': _detachedExecutionHost,
     'controlState': _detachedControlState,
     'authorityGeneration': _detachedAuthorityGeneration,
+    'statusCommitSubscriptionId':
+        _detachedProviderStatusCommitReceipt?.subscriptionId,
+    'statusCommitSequence': _detachedProviderStatusCommitReceipt?.sequence,
     'authorityLiveRuntimeGeneration': _detachedAuthorityLiveRuntimeGeneration,
     'authoritySourceFingerprint': _detachedAuthoritySourceFingerprint,
     'activeTurnId': _detachedActiveTurnId,
@@ -674,6 +677,7 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
   bool _statusFromSessionSnapshot = false;
   bool _statusFromLiveMessage = false;
   DateTime? _detachedProviderStatusObservedAt;
+  ConversationSyncV2CommitReceipt? _detachedProviderStatusCommitReceipt;
   String? _detachedProviderStatusSignature;
   String? _detachedProviderSourceFingerprint;
   DateTime? _detachedProviderSettingsObservedAt;
@@ -1441,6 +1445,15 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
   bool _detachedRuntimeOverlayIsProvenStale(
     ConversationSyncV2EventMessage event,
   ) {
+    final receipt = _detachedProviderStatusCommitReceipt;
+    if (_hasCurrentDetachedAuthorityLease &&
+        receipt != null &&
+        receipt.sourceFingerprint == _detachedProviderSourceFingerprint &&
+        receipt.subscriptionId == event.subscriptionId &&
+        receipt.sequence > event.sequence &&
+        event.runtimeSessionId == _detachedLiveRuntimeSessionId) {
+      return true;
+    }
     final projectedAt = _detachedProviderStatusObservedAt;
     final eventAt = DateTime.tryParse(event.observedAt ?? '')?.toUtc();
     return projectedAt != null &&
@@ -1594,6 +1607,7 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
     _detachedAuthoritySourceFingerprint = null;
     _detachedActiveTurnId = null;
     _detachedProviderStatusObservedAt = null;
+    _detachedProviderStatusCommitReceipt = null;
     _detachedProviderStatusSignature = null;
     externalDesktopTurnSteerable.value = false;
     detachedLiveRuntimeRevision.value += 1;
@@ -2295,6 +2309,7 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
       }
       if (sourceChanged || _detachedProviderStatusObservedAt != null) {
         _detachedProviderStatusObservedAt = null;
+        _detachedProviderStatusCommitReceipt = null;
         _detachedProviderStatusSignature = null;
         externalDesktopTurnSteerable.value = false;
         final current = sourceChanged
@@ -2333,6 +2348,29 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
     if (previousObservedAt != null && observedAt.isBefore(previousObservedAt)) {
       return;
     }
+    final suppliedReceipt = status.commitReceipt;
+    final receipt =
+        suppliedReceipt != null &&
+            suppliedReceipt.sourceFingerprint ==
+                _detachedProviderSourceFingerprint &&
+            suppliedReceipt.subscriptionId.isNotEmpty &&
+            suppliedReceipt.sequence > 0 &&
+            status.source == 'bridgeRuntime' &&
+            status.confidence == 'authoritative' &&
+            status.runtimeAttachment == 'loaded' &&
+            status.executionHost == 'bridge' &&
+            statusRuntimeSessionId == _detachedLiveRuntimeSessionId &&
+            statusRuntimeSessionId?.isNotEmpty == true
+        ? suppliedReceipt
+        : null;
+    final previousReceipt = _detachedProviderStatusCommitReceipt;
+    if (receipt != null &&
+        previousReceipt != null &&
+        receipt.sourceFingerprint == previousReceipt.sourceFingerprint &&
+        receipt.subscriptionId == previousReceipt.subscriptionId &&
+        receipt.sequence <= previousReceipt.sequence) {
+      return;
+    }
     final signature = [
       status.activity,
       status.attention,
@@ -2350,6 +2388,10 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
     ].join('\u0000');
     if (previousObservedAt == observedAt &&
         signature == _detachedProviderStatusSignature) {
+      // A later SQL commit can provide new order without changing business
+      // status. Missing receipt clears this local proof conservatively.
+      _detachedProviderStatusCommitReceipt = receipt;
+      _flushPendingDetachedRuntimeOverlays();
       return;
     }
 
@@ -2447,6 +2489,7 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
         hasActiveTurnId &&
         status.controlState == 'steerable';
     _detachedProviderStatusObservedAt = observedAt;
+    _detachedProviderStatusCommitReceipt = receipt;
     _detachedProviderStatusSignature = signature;
     _flushPendingDetachedRuntimeOverlays();
     externalDesktopTurnSteerable.value =
@@ -2717,6 +2760,7 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
     }
     _detachedProviderSourceFingerprint = normalized;
     _detachedProviderStatusObservedAt = null;
+    _detachedProviderStatusCommitReceipt = null;
     _detachedProviderStatusSignature = null;
     _detachedAuthorityObserved = false;
     _detachedExecutionHost = null;
