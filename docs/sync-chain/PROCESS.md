@@ -1849,3 +1849,21 @@ new B overlay也pending。没有mock authority、手造pending map或改原预�
 只删除fixture ACK的多余requestId，另断言无unsupported_message；所有业务/容量/queue归零断言及原期限保持。
 语法检查0 / 0.110秒、Bridge noEmit0 / 3.494秒只能说明对应静态门禁，不覆盖本次行为FAIL。
 固定修正输入后重新跑实际组合，独立复核及完整Bridge另记。
+
+## E076 — public ACK组合通过，全Bridge通过，失败诊断再收紧
+
+`1d430fe28cc0bf49a55c1ef03cae6ff5b9db53f7` clean：
+`c1g-valid-ack-authority-replacement` 1 PASS，0 / 11.203秒；
+`c1g-final-full-bridge` 2547 PASS / 1 SKIPPED，125 files PASS / 1 SKIPPED，0 / 18.744秒。
+`c1g-final-bridge-typecheck` 0 / 5.634秒，`c1g-final-harness-syntax` 0 / 0.022秒。
+固定SHA独立GPT-6 Luna/max只读复核无本次新增可证明P0–P2；没有运行独立测试。
+
+完整运行的实际wire为B status sequence164起共41页，最后一页204，B overlay205；
+old A没有wire overlay，bytes/waiters/outstanding在close前归零。
+gate在catalog发送阶段，不能扩张成overlay自身await前后replacement全部已验证；Mobile同ID接收仍未执行。
+
+Root进一步在B overlay实际到达之后、最后ACK drain之前记录pending count/bytes并直接断言都为0。
+这样临时“不同authority不退休”的错误策略能报告具体残留，不能被最终close清理掩盖或只依赖超时。
+正确断言、原budgets、RPC/wire/control路径及期限没有放宽，产品与既有fixture均未改。
+下一冻结输入做错误策略敏感性、finally源码hash恢复，再跑完整Bridge与目标语法/类型及窄复核。
+Mobile原输入与71项保护按同一原source/fixture对象继承，不伪造新全量Mobile。

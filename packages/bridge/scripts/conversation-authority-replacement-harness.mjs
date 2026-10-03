@@ -230,6 +230,13 @@ try {
   acknowledge(lastSent.sequence);
   await waitFor(() => frames.some((f) => f.event === "runtime_overlay" &&
     f.message.message.id === newItemId), "new authority overlay on original wire after ACK");
+  stages.push({ stage: "replacement-overlay-wire", runtimeId, oldAuthority, newAuthority,
+    pendingRuntimeOverlayCount: state.pendingRuntimeOverlays.size,
+    pendingRuntimeOverlayBytes: state.pendingRuntimeOverlayBytes });
+  // A leftover old authority must fail directly, rather than being hidden by
+  // closing the subscription or only appearing as an eventual drain timeout.
+  assert.equal(state.pendingRuntimeOverlays.size, 0, "Retired authority overlay remains pending");
+  assert.equal(state.pendingRuntimeOverlayBytes, 0);
   await waitFor(() => frames.some((f) => f.event === "sync_complete") &&
     !state.syncing && state.capacityWaiters.size === 0 && state.outbound.length === 0 &&
     state.outstandingBytes === 0 && state.queuedBytes === 0 &&
