@@ -318,6 +318,7 @@ void main() {
                 canonicalContaining('assistant-replaced-A'),
               ]);
               final a = deliveredA[1] as ConversationSyncV2EventMessage;
+              final canonicalA = deliveredA[2] as ConversationHotWindowSnapshot;
               await Future<void>.delayed(Duration.zero);
               await waitForProjection(
                 () =>
@@ -480,6 +481,20 @@ void main() {
                 expect(projection()['pendingRuntimeOverlayCount'], 0);
                 trace.add({
                   'stage': 'canonical-A-and-B-on-same-page',
+                  'assistantIds': assistantIds(),
+                  'runtimeProjection': chat.diagnosticRuntimeProjection,
+                });
+              } else {
+                await mount(canonicalA, runtime.id);
+                expect(
+                  tester.state(find.byType(DurableSessionPreviewUpdater)),
+                  same(mounted),
+                );
+                expect(assistantIds(), ['assistant-replaced-A']);
+                expect(projection()['runtimeOverlayCount'], 0);
+                expect(projection()['pendingRuntimeOverlayCount'], 0);
+                trace.add({
+                  'stage': 'canonical-A-on-same-page',
                   'assistantIds': assistantIds(),
                   'runtimeProjection': chat.diagnosticRuntimeProjection,
                 });

@@ -1943,3 +1943,12 @@ flush只凭exact authority+turn或严格更晚observedAt判定，equal时无法�
 由原status对象携带source/subscription/sequence，经原SessionList/Updater到Cubit；同来源/订阅严格后继的status才取得退休证据。
 receipt不从wire JSON接纳、不写wire/SQLite或新增DB迁移；缺失/旧订阅等仍保守等待，原owner保持唯一。
 先补等时间旧/未来、跨source/subscription、duplicate status receipt及reset保护，再修原flush并重跑原真实合同与公共保护。
+
+## E081 — 本地commit receipt值与公开顺序反向契约
+
+仅增加不可变ConversationSyncV2CommitReceipt值及status的本地copy接口，未接Service或改变Cubit判断。
+receipt不由fromJson读取、toJson不写出，避免wire/缓存JSON伪造本地提交证据；没有协议/数据库字段迁移。
+新公开原Cubit合同检查自然equal逻辑的旧/未来、缺receipt/跨source/跨subscription/同序号、duplicate更新、旧receipt及null reset；
+本阶段消费者未接receipt，应先保留选定red，不将字段声明当修复。
+真实receiver另在无新B item lane恢复挂载已捕获的合法A canonical window，要求同一页面A单次且无runtime/pending overlay。
+这是补齐两lane历史呈现证明，不放宽已有retirement断言；产品修复待下一独立提交。

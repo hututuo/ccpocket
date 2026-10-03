@@ -366,6 +366,20 @@ String? _conversationSyncProjectGroupKind(Object? value) =>
     ? value as String
     : null;
 
+/// Local evidence emitted only after a complete V2 status batch commits.
+/// This is never decoded from or serialized to wire/SQLite status JSON.
+class ConversationSyncV2CommitReceipt {
+  const ConversationSyncV2CommitReceipt({
+    required this.sourceFingerprint,
+    required this.subscriptionId,
+    required this.sequence,
+  });
+
+  final String sourceFingerprint;
+  final String subscriptionId;
+  final int sequence;
+}
+
 class ConversationSyncV2Status extends ConversationSyncV2Target {
   const ConversationSyncV2Status({
     required super.provider,
@@ -383,6 +397,7 @@ class ConversationSyncV2Status extends ConversationSyncV2Target {
     this.controlState,
     this.authorityGeneration,
     this.runtimeSessionId,
+    this.commitReceipt,
   });
 
   final String activity;
@@ -416,6 +431,29 @@ class ConversationSyncV2Status extends ConversationSyncV2Target {
   /// Bridge attachment that produced this status. Older Bridges omit it.
   /// A local runtime generation cannot substitute for this remote identity.
   final String? runtimeSessionId;
+
+  final ConversationSyncV2CommitReceipt? commitReceipt;
+
+  ConversationSyncV2Status withCommitReceipt(
+    ConversationSyncV2CommitReceipt receipt,
+  ) => ConversationSyncV2Status(
+    provider: provider,
+    providerSessionId: providerSessionId,
+    activity: activity,
+    attention: attention,
+    result: result,
+    runtimeAttachment: runtimeAttachment,
+    source: source,
+    confidence: confidence,
+    observedAt: observedAt,
+    attentionRequestId: attentionRequestId,
+    executionHost: executionHost,
+    activeTurnId: activeTurnId,
+    controlState: controlState,
+    authorityGeneration: authorityGeneration,
+    runtimeSessionId: runtimeSessionId,
+    commitReceipt: receipt,
+  );
 
   factory ConversationSyncV2Status.fromJson(Map<String, dynamic> json) {
     final status = ConversationSyncV2Status(
