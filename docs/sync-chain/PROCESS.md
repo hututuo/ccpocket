@@ -1817,3 +1817,20 @@ Bridge2546/1、build/typecheck按相同tree继承旧收据。全部实际SHA/dir
 下批C1g先补该合同，再接Mobile/SQL/原页面判断旧A与未观察新B，不提前统一Bridge/Cubit两个queue。
 R45/R49及历史R29/095cab00直接归因继续独立，真实Provider/设备/生产/云CI/OTA/签名安装/发布NOT_RUN，原生UI工具BLOCKED。
 README、PLAN、CHAIN-MAP、矩阵、RUNBOOK与runtime入口同步到本断点；所有工作仅在隔离分支本地提交。
+
+## E074 — C1g实际同ID替换与原capacity/ACK组合合同
+
+父文档断点 `08c3c5e79a54dbc560c5a5958de8faa65983c399` clean；C1f的71项选定门禁已闭合。
+下一证据批仅新增独立Bridge test/harness，不修改产品src、既有fixture、原七接收黑盒或依赖。
+使用既有stdio JSON-RPC Provider fixture、actual CodexProcess、actual Bridge/SessionManager与原V2 handler。
+10,000条隔离catalog seed按原64KiB/1MiB/2MiB预算建立真实capacity waiter，不改预算、不手造queue。
+
+通过原WebSocket subscribe、真实Provider notifications及SessionManager.replaceCodexSession执行：
+old A event在capacity处pending；原replacement callback提交同public ID的新process B/actual opaque authority；
+new B event也等待；只发送public累计ACK释放budget。正确结果为旧A overlay退休，新B在其status之后单次发出，
+原订阅的outstanding/queued/pending bytes与waiters归零，再关闭自己的资源。
+只读内部map/budget用于确认gate和drain，不能调用私有发送/清理方法，不能用close/unsubscribe假装ACK恢复。
+
+新增harness在自建child中由已安装tsx加载实际TypeScript源码，不依赖换dist；独立Provider仍为fixture。
+它不替换真实Mobile receiver；本合同即使PASS也只补Bridge组合，R47的Mobile旧A/未观察新B仍须下一合同。
+先冻结并运行该实际组合；若有失败，区分fixture启动/合同与产品行为，保留原日志再修，未运行前为NOT_RUN。
