@@ -1603,3 +1603,36 @@ binding到达后经原cached status重放才重新形成lease。
 三文件format 0 changed。下一步提交并冻结这份产品/测试输入，完整Mobile/analyze/format，
 原七黑盒在新全量中重新执行，再做固定SHA独立复核；不得沿用九行candidate的旧黑盒作为最终重跑。
 Bridge/依赖/黑盒源码未变时按精确Git对象继承E059对应Bridge门禁，继承与重跑各自登记。
+
+## E064 — C1e 固定源码全量通过，测试导入警告另做后续复查
+
+E063候选冻结为 `16196f05bf60943c1ebbc49475353a7b085fa1a4`。
+所有检查开始clean，完整Mobile结束后再次核对HEAD/status未变化；期间没有编辑产品/测试/文档。
+
+| 收据 | 结果 | 退出码 / 时长 |
+|---|---|---|
+| c1e-final-full-mobile | 3396 PASS / 4 SKIPPED；含原三文件七黑盒与26项新权限契约 | 0 / 346.089秒 |
+| c1e-final-full-analyze | FAIL 静态门禁：0 error、1017既有info，新增同一未使用测试import两条重复warning | 2 / 16.559秒 |
+| c1e-final-format | 三个改变的Dart文件0 changed | 0 / 0.528秒 |
+
+`c1e-final-analysis-comparison.json`比较完整诊断文本/续行/重复计数，只新增
+detached_runtime_authority_test.dart 的bridge_service unused_import两条warning，没有消除既有诊断。
+不能把退出2写成静态PASS。完整测试结束后仅删除未使用import，原行为/输入/断言不变；
+后续26项、完整analyze、格式及产品tree一致性另记，尚不将这个冻结SHA的所有门禁写成最终接受。
+
+`c1e-final-bridge-input-identity.json`核对与E059相同的Bridge、四个依赖文件和黑盒tree。
+Bridge完整2546 PASS / 1 SKIPPED继承c1d-final-full-bridge；
+Node22 noEmit继承c1d-final-bridge-typecheck-corrected；build继承E053相同Bridge tree的实际运行。
+本次没有修改Bridge或重复跑它的完整测试，不把继承伪装成新收据。
+
+固定SHA的GPT-6 Luna/max独立只读复核无可证明新增P0–P2，未改文件或测试。
+核对早期guard的顺序、known local/remote比较、unbound只读、合法C owner/image lease、
+26个公开输入、旧V2/legacy/Desktop/durable target与原terminal断言；记录为c1e-final-independent-review.json。
+`c1e-final-admission-owner-audit.json`记录产品hash与原owner，确认没有新增权限状态/正文缓存。
+`c1e-final-page-presentation-evidence.json`保存新全量held-final轨迹：stream结束、A/B过程折叠、final index3在外，
+当前read/mutation runtime与held event runtime一致；不用于解释历史R29或095cab00的失败。
+
+两处原checkout身份与状态核对仍相同，见c1e-original-checkouts-verification.json；
+真实Provider、设备、生产、CI、OTA/签名安装/stable/release仍分别NOT_RUN；原生UI工具不可用为BLOCKED。
+下批queue-only authority生产/消费顺序只读草稿另存c1e-next-boundary-draft.md，
+先证明真实producer可达顺序再定策略，不照抄UUID不同就应清空/等待的现状。
