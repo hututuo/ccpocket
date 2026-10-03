@@ -1743,3 +1743,16 @@ runtime snapshot、wire、SQL与页面轨迹的runtime/authority/turn一致，RP
 先新增真实Node子进程的失败契约：只运行keepalive且不发READY，100ms READY timeout后应已退出；
 原real receiver的15秒启动期限及所有业务断言不变。测试finally只退休本用例自己创建的process。
 新owned wrapper先转调原helper，保存red后再补kill/join清理；未修改公共helper、原七个黑盒或生产服务。
+
+## E070 — 只退休本测试自建harness，READY失败P2的red与窄修
+
+red checkpoint `fa32f05a86e6e20b62839598a3a47ee47a277784` clean，
+`c1f-owned-harness-timeout-red` 0 PASS / 1行为FAIL，1 / 4.094秒：READY计时器已报错，
+子进程exitCode再等1秒仍未结束；测试自己的finally将该captured process退休，无遗留服务。
+
+窄修仅在新测试owned wrapper的失败出口：原helper先取消stdout/stderr订阅，
+wrapper对自己传入的Process发送SIGTERM并等待exit；10秒仍未退出时升级SIGKILL，再等待exit后重抛原错误。
+不扫描/杀其他PID，不停止生产Bridge，不改公共harness helper或原七黑盒。
+caller在READY失败时关闭自己的control stream；已退出的失败测试不再次发送kill。
+receiver的原15秒READY、10秒业务等待与90秒总期限不变，清理合同另用100ms模拟未发READY。
+下一步固定这份测试输入，重跑两项新增用例/原七黑盒/60项权限终态队列保护与静态格式，复核P2关闭。

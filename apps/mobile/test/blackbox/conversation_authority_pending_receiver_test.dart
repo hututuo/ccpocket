@@ -26,7 +26,25 @@ Future<HarnessReadyResult> _waitForOwnedHarnessReady(
   Process process, {
   Duration timeout = const Duration(seconds: 15),
   void Function(Map<String, dynamic> response)? onControl,
-}) => waitForHarnessReady(process, timeout: timeout, onControl: onControl);
+}) async {
+  try {
+    return await waitForHarnessReady(
+      process,
+      timeout: timeout,
+      onControl: onControl,
+    );
+  } catch (_) {
+    process.kill(ProcessSignal.sigterm);
+    await process.exitCode.timeout(
+      const Duration(seconds: 10),
+      onTimeout: () {
+        process.kill(ProcessSignal.sigkill);
+        return process.exitCode;
+      },
+    );
+    rethrow;
+  }
+}
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
@@ -37,6 +55,7 @@ void main() {
       Platform.environment['CCPOCKET_NODE'] ?? 'node',
       ['-e', 'setInterval(() => {}, 1000)'],
     );
+    var exited = false;
     try {
       await expectLater(
         _waitForOwnedHarnessReady(
@@ -47,12 +66,11 @@ void main() {
       );
       // This fixture never announces READY and otherwise runs forever. An
       // exit here proves startup failure retired the child, not just a timer.
-      expect(
-        await process.exitCode.timeout(const Duration(seconds: 1)),
-        isNot(0),
-      );
+      final exit = await process.exitCode.timeout(const Duration(seconds: 1));
+      exited = true;
+      expect(exit, isNot(0));
     } finally {
-      process.kill(ProcessSignal.sigterm);
+      if (!exited) process.kill(ProcessSignal.sigterm);
       await process.exitCode.timeout(const Duration(seconds: 2));
     }
   });
