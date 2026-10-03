@@ -356,26 +356,15 @@ void main() {
                 'runtimeProjection': chat.diagnosticRuntimeProjection,
               });
 
-              // B's init is subscribed before the original replacement command.
-              final replacementInit = bridge.messages
-                  .firstWhere(
-                    (message) =>
-                        message is SystemMessage &&
-                        message.subtype == 'init' &&
-                        message.provider == 'codex' &&
-                        message.sessionId == runtime.id,
-                  )
-                  .timeout(const Duration(seconds: 10));
-              final replacement = await Future.wait<Object>([
-                control('replace_runtime'),
-                replacementInit,
-              ]);
-              final replaced = replacement[0] as Map<String, dynamic>;
+              // The original replacement Promise resolves after B is ready and
+              // owns the runtime map. Its bootstrap init is intentionally not
+              // forwarded before that swap. V2/SQL below independently proves
+              // Mobile received the actual B status, rather than trusting ACK.
+              final replaced = await control('replace_runtime');
               final bAuthority = replaced['newAuthority']! as String;
               expect(replaced['runtimeId'], runtime.id);
               expect(replaced['oldAuthority'], a.authorityGeneration);
               expect(bAuthority, isNot(a.authorityGeneration));
-              expect((replacement[1] as SystemMessage).sessionId, runtime.id);
               await waitForProjection(
                 () =>
                     sessionList.hasUsableCatalogForCurrentTarget &&
@@ -440,12 +429,23 @@ void main() {
                   'runtimeProjection': chat.diagnosticRuntimeProjection,
                 });
               }
+              final beforeMountStatus =
+                  sessionList.conversationStatuses['codex\u0000$threadId'];
+              trace.add({
+                'stage': 'B-status-before-original-page-mount',
+                'authority': beforeMountStatus?.authorityGeneration,
+                'statusObservedAt': beforeMountStatus?.observedAt,
+                'pendingCount': projection()['pendingRuntimeOverlayCount'],
+              });
               await mount(initial, runtime.id);
               final mounted = tester.state(
                 find.byType(DurableSessionPreviewUpdater),
               );
               trace.add({
                 'stage': 'B-status-applied-on-original-page',
+                'statusObservedAt': sessionList
+                    .conversationStatuses['codex\u0000$threadId']
+                    ?.observedAt,
                 'assistantIds': assistantIds(),
                 'runtimeProjection': chat.diagnosticRuntimeProjection,
               });

@@ -1911,3 +1911,18 @@ actual A经原RPC/Bridge/wire/Service/SQL进入无visible owner的quarantine，�
 等待实际handle+system/init、overlay delivery与真实SQL/status提交屏障；所有异步等待有限且joined，关闭本测试拥有的资源。
 先冻结测试-only输入运行，若产品行为失败保留原red和trace再判定，不从未知时间关系编造根因或提前改策略。
 C1g的catalog组合、完整Bridge2547/1与首次监听timeoutR53仍按原精确输入保存；本合同未运行前NOT_RUN。
+
+## E079 — 首次接收fixture的第二公开init屏障错误
+
+7028b503 clean：c1h-first-actual-replacement-receivers 0 PASS / 2 FAIL，1 / 24.382秒；
+均在第二个公开system/init的10秒waiter超时，尚未执行B页面消费断言。目标analyze无诊断0 / 14.712秒、harness语法0 / 0.182秒。
+actual A已wire/SQL并pending1，originalreplaceCodexSession已commit同ID新process/UUID，B实际status已wire；
+但全部公开wire只有A首次init。原session.ts755 ownsRuntimeSlot与963消息earlyreturn会抑制替换commit前的B bootstrap消息。
+这是root新增测试屏障假阴性，不是产品red。两个失败及六类raw trace的hash保留在c1h-first-invalid-init-barrier-audit.json。
+首用例actual A event与首次B status时间自然相等；尚未到页面接纳，不能据此声称消费者已测到该窗口。
+
+独立只读复审认可：保留A首次handle/init配对，只删除第二公开init future/断言；
+原replace Promise加实际map/process/newUUID检查构成commit屏障，其后必须独立等待V2/SQL/SessionList精确B状态。
+不补发伪造init、不手造status/time/authority、不放宽期限或移除队列/合法canonical断言。
+新增记录原页面mount前后实际status时间，避免把稍后自然推进的status误作相等窗口已验收。
+固定修正测试输入后重跑；产品与既有fixture未改。
