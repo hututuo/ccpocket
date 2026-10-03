@@ -121,8 +121,10 @@ RuntimeOverlayQuarantine独占pending map与bytes，最大32个event/64KiB编码
 超限拒绝新事件，duplicate不改预算，remove/clear一起退休bytes。
 原Cubit继续唯一负责admission、编码预算、apply和source/runtime/authority失效。
 同binding/authority的turn退出只退休visible tracking；保留的pending随后由原flush逐项匹配或按时间拒绝。
+authority mismatch清理要求已有visible tracking；queue-only不匹配且未证明旧的event仍隔离，策略见R47。
 visual pending的256/257策略仍在原Cubit，尚未审定，不借quarantine合同宣称正确。
-保护、失败及回退入口见R37–R46、RUNTIME-STATUS-IDENTITY、RUNTIME-QUEUE-ENTRY与E052–E058。
+完整门禁与独立复核见E059/E060；保护、失败与未知边界见R37–R48及两份runtime入口。
+原mutation lease用本地generation/source接纳authority，尚未在新terminal身份修复中验证；R48单列。
 
 ```mermaid
 flowchart LR

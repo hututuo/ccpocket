@@ -5,14 +5,15 @@
 - 时间：2026-10-03（Asia/Shanghai；此前条目保留当时记录）。
 - 分支：`codex/sync-chain-extraction-20261001`。
 - 起始 SHA：`930f1267e949c6cf2095761cc71c43cca08c6dc3`。
-- 阶段：A0–A3 / B1、B2、C1a 与 C1b 选定接缝已完成源码门禁；C1c 89084bcb 全量已绿，但独立复核的 runtime 身份缺口已由 public red 证明，原接点修复后已迁移quarantine唯一owner，最终门禁待E058冻结。
-- 最新完整门禁产品 SHA：`ce51e28027087e5fe4d4d79533390203ae3735a8`，canonical 与焦点行为分开提交。
-- 最新固定测试/fixture 输入：`adf337ea5f2ddddf3639da4e37b020435033b1d1`，全部门禁启动时 clean。
-- 最新全量 Mobile 3333 PASS / 4 SKIPPED（--concurrency=1），Bridge 2546 PASS / 1 SKIPPED；build/typecheck/格式通过。
-- analyze 0 error/warning，1017 既有 info 完整文本逐项无新增；产品/fixture 固定 SHA 独立复核无剩余可证明 P0–P2。
+- 阶段：A0–A3 / B1、B2、C1a、C1b、C1c/C1d 的选定接缝已完成源码门禁；下一批先核对原 mutation lease 的 runtime 归属，尚不搬 visual pending。
+- 最新完整门禁产品/测试 SHA：`da3d3f610c4507ad15c501a9c8c7ffeceb143dac`，身份、置信度、future turn 行为与队列结构分别提交。
+- 仅测试写法后续 SHA：`2f95d6d03e2b371c9eb7f8283eeaa76eec048808`，产品/依赖/黑盒 tree 不变；相关 40 项及完整静态分析另查。
+- 最新全量 Mobile 3370 PASS / 4 SKIPPED（--concurrency=1），Bridge 2546 PASS / 1 SKIPPED；build/typecheck/格式通过，继承与重跑分别登记。
+- 最终 analyze 0 error/warning，1017 既有 info 完整文本逐项无新增；固定产品 SHA 独立复核无本次新增 P0–P2。
 - R35 pending focus 缺陷已确定性旧 Service red → 窄修 → 相同原页面 green，关闭选定交错；旧两次 FAIL 与恢复收据保留。
 - C1c `095cab00` clean 全量 3344 PASS / 4 SKIPPED / 1 FAIL，不是可验收候选；新 R40 两项 red 和诊断见 E049。
-- 已接受门禁证据见 E041；当前调查、提交索引与回退见 E043–E052。
+- 已接受最新门禁证据见 E059/E060；red→green、提交索引与回退见 E043–E060。
+- R47 queue-only authority 留存为旧策略未审定；R48 原控制 lease 尚未有本批的远端身份归属契约，不据视觉修复宣称控制链验收。
 - E024 的历史并发折叠等待 FAIL 尚未归属；当前同四文件默认并发 50 PASS，不能据此关闭旧失败或宣称设备/运行链验收。
 - 真实 Provider、模拟器/真机、生产 Bridge、云 CI、OTA/发布 NOT_RUN；原生 UI 自动化工具缺失为 BLOCKED。
 - 最新提交与验证身份在后续条目登记；不能从本节推断部署状态。
@@ -1481,3 +1482,37 @@ FIFO、容量拒绝、remove-before-apply 和原取消出口；原 mutation leas
 不把它写成在新 SHA 重跑了全量。最终静态验收待该复查登记。
 真实 Provider、Simulator/真机、生产部署、云 CI、OTA/签名安装/stable/release 仍分别 NOT_RUN；
 当前原生 Dart/Marionette 工具不可用，设备 UI 自动化为 BLOCKED。
+
+## E060 — 测试写法复查、精确验收边界与接手入口
+
+E059 后续输入 `2f95d6d03e2b371c9eb7f8283eeaa76eec048808`，检查开始 clean。
+唯一测试差异为 map null-aware entry，断言/消息/身份语义没有改变；另一改变文件仅为过程账本。
+
+| 收据 | 结果 | 退出码 / 时长 |
+|---|---|---|
+| c1d-style-terminal-protocol | terminal 21 项 + protocol 19 项，共 40 PASS | 0 / 3.932秒 |
+| c1d-style-full-analyze | 0 error/warning、1017 既有 info | 0 / 15.192秒 |
+| c1d-style-format | 单个测试文件 0 changed | 0 / 0.450秒 |
+
+`c1d-style-analysis-comparison.json` 比较 E041 完整诊断文本、续行及重复计数，新增/消除均空。
+`c1d-style-input-identity.json` 核对 lib、Bridge、依赖及黑盒 tree 与 `da3d3f6` 完全相同。
+所以完整 Mobile/Bridge 门禁仍准确归属 E059 的冻结 SHA，没有声称在样式 SHA 重跑。
+独立复核存为 `c1d-final-independent-review.json`；
+queue audit 的 authority 范围纠正另存 `c1d-final-queue-owner-audit-corrected.json`，保留原 artifact。
+
+C1c/C1d 选定源码门禁接受：终态身份/置信度保护、同 authority 未来 turn 保护、
+quarantine 单 owner 迁移已闭合。历史 R29、`095cab00` FAIL 的直接归因仍未知；
+queue-only authority 策略、原 mutation lease 同源缓存归属、visual 256/257 与真实 Provider/设备仍未接受。
+README、PLAN、地图、矩阵、RUNBOOK 与入口文档同步说明当前责任，避免把旧 accepted SHA 当最新候选。
+
+可审阅提交链：`ac4d72fc` 身份 red → `1ee38207` 身份修复；
+`4b59aee7` future-turn red → `c3fcab96` 退休修复；
+`ad94066c` 未知 activity red → `16529517` 置信度修复；
+`da3d3f6` 仅 queue owner 抽取 → `2f95d6d0` 仅测试写法复查。
+结构回退须迁回完整 map/bytes/add/remove/clear，保留已证明的行为和原出口；
+状态身份回退须同时处理依赖该字段的新清理资格，不能用中间 red checkpoint 运行。
+
+下一批先列原控制 lease 的入站事实、读写能力与实际发送校验，再以公开接点证明旧 runtime 缓存交错。
+若新旧 runtime 无法判定，继续补证据；不把 ID 直接当 authority，不删除旧 Bridge 的合法兼容用途。
+future authority 等待策略另列 R47；它没有因本次视觉队列清理而自动变正确。
+所有提交限本独立分支；原 main、旧 repair checkout、生产服务和发布状态分别保持原授权边界。

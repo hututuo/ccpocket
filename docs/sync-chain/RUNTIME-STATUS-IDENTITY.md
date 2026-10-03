@@ -36,7 +36,7 @@ C1c 原候选在同一 socket 输出未改变时，用 source/local generation �
 
 1. 先保存两种 B 缓存顺序、旧 Bridge 反向保护和 wire 身份 round trip 的 red checkpoint。
 2. Bridge producer 发出真实身份；剥离不再由该 runtime 拥有的旧身份，运行 Bridge 相关整文件回归。
-3. 新清理分支核对具体身份；原十九项 terminal 契约、Dart protocol、真实 SQLite/status 接收回归通过。
+3. 新清理分支核对具体身份及权威置信度；二十一项 terminal 契约、Dart protocol、真实 SQLite/status 接收回归通过。
 4. build 新 Bridge，再运行原三文件七个黑盒；原 receiver、fold、期限与恢复断言不改。
 5. 固定 SHA 后完整 Mobile/Bridge、typecheck/analyze/format 与独立复核。
 6. 再进入 runtime quarantine 的容量、取消、未来 turn 契约；行为修复与结构迁移分别提交。
@@ -44,3 +44,10 @@ C1c 原候选在同一 socket 输出未改变时，用 source/local generation �
 回退必须保留 red 输入。若撤销身份字段，也必须同时撤销依赖它的新清理分支；
 不能只移除生产字段后保留需要新字段的验收声明。
 尚未执行的项记 NOT_RUN，不以旧 Bridge 门禁替代字段变化后的运行。
+
+## 当前验收
+
+完整产品/测试输入 `da3d3f6` 的 Mobile 3370 PASS / 4 SKIPPED、Bridge 2546 PASS / 1 SKIPPED，
+新 Bridge build、noEmit、原七黑盒及固定 SHA 独立复核通过（E059）。
+后续 `2f95d6d0` 只改测试 null-aware entry；40 项相关用例、格式、1017 既有诊断逐项复查通过（E060）。
+产品及黑盒 tree 未变。真实 Provider/设备与原 mutation lease 的控制归属仍分别未验收。

@@ -40,7 +40,21 @@ C1b 已修复无效 canonical 仍改变设置/审批/队列/分页，以及解�
 Bridge **2546 PASS / 1 SKIPPED**，build/typecheck、格式、1017 条既有诊断完整比对及两项独立复核通过。
 最终门禁见 PROCESS E041；R35 选定交错已关闭，旧 FAIL 与恢复收据保留。
 完成信号责任见 [运行与焦点边界](RUNTIME-ITEM-BOUNDARY.md)；
-下一批先按 [R29 折叠等待入口](R29-FOLD-ENTRY.md) 定位旧观察，再评估 runtime 状态抽取。
+历史 [R29 折叠等待入口](R29-FOLD-ENTRY.md) 继续保留旧失败的归因缺口。
+
+C1c/C1d 已通过选定终态修复与隔离队列抽取的源码门禁。
+完整产品/测试冻结 `da3d3f610c4507ad15c501a9c8c7ffeceb143dac`：
+Mobile **3370 PASS / 4 SKIPPED**、Bridge **2546 PASS / 1 SKIPPED**，包含七个真实接收黑盒。
+固定 SHA 独立复核无本次新增 P0–P2；终态清理要求当前远端 runtime 身份及权威 activity，
+未来 turn 的合法隔离消息不再被旧可见 turn 退休误删。随后只改一处测试 map 写法，
+`2f95d6d0` 的相关 40 项及完整 analyze 复查通过：0 error/warning、1017 既有 info，无新增。
+产品、依赖和黑盒树与冻结输入一致；完整收据见 PROCESS E059/E060。
+
+新模块 `RuntimeOverlayQuarantine` 独占 pending map/bytes，原 Cubit 保留接纳、权限及呈现。
+责任、容量边界与回退见 [状态身份](RUNTIME-STATUS-IDENTITY.md) / [队列职责](RUNTIME-QUEUE-ENTRY.md)。
+authority 替换的反向测试有已显示 owner；只有 pending 时的旧/未来 authority 策略未审定。
+下一批先核对原 mutation lease 的远端 runtime 归属与公开控制入口，保留 R47/R48 缺口；
+visual pending 的 256/257 策略仍未验证，不据此扩大结构迁移。
 
 接手顺序：
 
@@ -53,6 +67,7 @@ Bridge **2546 PASS / 1 SKIPPED**，build/typecheck、格式、1017 条既有诊�
 7. [C1b 入口](C1B-ENTRY.md)、[历史接受职责](DETACHED-CANONICAL-ADMISSION.md)：已实现接缝与回退依赖。
 8. [运行与焦点边界](RUNTIME-ITEM-BOUNDARY.md)：R35 根因、焦点快照所有权与回退保护。
 9. [R29 折叠等待入口](R29-FOLD-ENTRY.md)：保留失败、当前重放、缺少证据和下批执行顺序。
+10. [状态身份](RUNTIME-STATUS-IDENTITY.md)、[队列职责](RUNTIME-QUEUE-ENTRY.md)：C1c/C1d 的选定契约与未知边界。
 
 过程记录不得以旧证据覆盖新失败。源码测试通过、真实 Provider、模拟器、真机、部署和发布分别报告。
 这组文档与对应代码一同提交；原始测试输出保存为独立文件，账本记录命令、身份、结果和证据路径。

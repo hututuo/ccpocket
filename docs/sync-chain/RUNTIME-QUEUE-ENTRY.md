@@ -1,11 +1,11 @@
 # Runtime 队列的职责与抽取入口
 
-本文件从 C1c `89084bcb` 的队列责任梳理；随后 runtime status 身份已补分项契约，见 PROCESS E052/E053。
-最终全量门禁待候选冻结登记，本文件不是终态候选的完整验收。
-当前十三项公开queue契约PASS，future turn两项red已在原接点窄修；原七黑盒PASS（E054/E055）。
-quarantine已迁到RuntimeOverlayQuarantine唯一owner，visual pending仍由原Cubit持有（E058）。
-完整门禁待候选冻结，结构迁移保留原十三项输入。
-终态修复目前只证明 R37–R42 的分项契约，历史 R29 和 095cab00 全量失败的直接归因仍留未知。
+quarantine 已迁到 RuntimeOverlayQuarantine 唯一 owner，visual pending 仍由原 Cubit 持有（E058）。
+十三项公开 queue 契约保护容量、预算与退休；future turn 两项 red 已在原接点窄修（E054/E055）。
+完整产品/测试输入 `da3d3f6` 的 Mobile 3370 PASS / 4 SKIPPED、Bridge 2546 PASS / 1 SKIPPED，
+原七黑盒、typecheck/format 与固定 SHA 独立复核通过；最终 analyze 的测试写法复查见 E060。
+这些是选定源码门禁，历史 R29 和 `095cab00` 全量失败的直接归因仍未知。
+queue-only authority 留存是原有且未审定的策略，不能从当前十三项契约推断所有 authority 替换会清队列。
 
 ## 两套队列不能合并
 
@@ -34,8 +34,8 @@ terminal ticket 只保存 generation/source/inputRevision，用于防止过期�
 | _onDetachedRuntimeOverlay | provider/thread、认证 Bridge/source、runtime/origin、rejected authority、message turn、dedup 的 admission | 不把完整 Cubit/Bridge/Service 传给 queue helper；admission 保留唯一位置 |
 | _quarantineDetachedRuntimeOverlay | insertion order、byte/count rejection 与只读统计 | duplicate ID 不计两次容量；超限不淘汰先前消息；不发送 ACK 或写 SQL |
 | _flushPendingDetachedRuntimeOverlays | 当前匹配 apply；明确 stale 删除；其他仍 pending | 复制队列迭代，remove-before-apply；回调/重入后不保留负 bytes |
-| _resetDetachedRuntimeOverlayTracking | 清 queue/bytes、accepted IDs 与原 tracking | suspend/source/binding/close及authority失效仍清pending；同binding/authority的turn退休只清visible tracking，原flush再判pending；不能只迁走map留一份bytes |
-| _reconcileDetachedRuntimeOverlayForStatus | 分类并清旧 runtime rows / aliases / tracking | 必须在 visual reset 清 alias 前执行；保留未入库 completion 与 canonical 的身份区分 |
+| _resetDetachedRuntimeOverlayTracking | 默认清 queue/bytes、accepted IDs 与原 tracking | suspend/source/binding/close/显式提交经原完整 reset；已核对同binding/authority的可见turn退休只清visible tracking，原flush再判pending；不能只迁走map留一份bytes |
+| _reconcileDetachedRuntimeOverlayForStatus | 分类并清旧 runtime rows / aliases / tracking | 仅有已呈现tracking才核对其authority mismatch；queue-only早退，非匹配且未证明旧的消息继续隔离；在visual reset清alias前执行 |
 | close | cancel subscriptions、reset overlay tracking 后 Cubit close | 回调检查 isClosed；StreamingStateCubit 的 flush timer 由其自己的 close 退休；不承诺未经验证的同步 join |
 
 Service 继续独占 wire subscription/generation/sequence/FIFO/cache commit/ACK；
@@ -47,24 +47,31 @@ Runtime queue helper 不取得任一层权威，不能把普通 assistant 正文
 已有 `chat_session_cubit_test.dart` 的 public 契约覆盖 source 身份、turnless overlay 拒绝、
 quarantine 等待精确 authority、suspend/rebind、shared observer 和已呈现 overlay 的 count/byte 上限。
 visual 同 turn、旧 ID 未知、首次 source 确认、不同 turn、idle 和审批撤权也已有原用例。
-`detached_terminal_streaming_test.dart` 的二十项与 held-final 原页面覆盖 R37–R40 的选定窗口。
+`detached_terminal_streaming_test.dart` 的二十一项与 held-final 原页面覆盖选定 terminal 窗口；
+JSON/真实 SQLite 与 Bridge producer 另保护可选 runtime 身份的生产、剥离和持久化。
+十三项 queue 契约覆盖下列已证明边界，具体 red 与同输入 green 见 E054–E060：
+
+- 32/33 条、含中文的精确 65536 bytes 与单条 65537 bytes，拒绝新超限且保留已有 FIFO；
+- duplicate 不重复计预算，accepted replay 不重新入队，stale 删除与 flush 后准确释放 bytes；
+- source/runtime/suspend、close 迟到保护，以及有 visible owner 的 authority 替换；
+- T1 已呈现、T2 先隔离时，直接 T2 working 和先 T1 terminal 两种顺序都保留合法 T2；
+- 旧 turn 已被时间证明过期时删除；canonical user 在各反向输入中保留。
 
 不能把上面证据扩张为：
 
 | 缺口 | 下一批需要验证的结果 |
 |---|---|
-| quarantine 32/33、精确 byte 边界、duplicate 的预算占用 | 未验证消息到边界仍隔离；超限不能更改已有正文/顺序/bytes；重复不吃预算 |
-| flush 后 remove/reject/reset 的 byte 退休 | 总 bytes 回到准确值，后续合法事件可使用腾出的容量；不会负数或保留旧 owner |
-| future authority/turn 在旧 terminal 前到达 | 同source/runtime/authority且T2时间不旧时应保留；两项public输入red→窄修green，已分开visible退休与pending owner失效。真实Provider双turn仍NOT_RUN |
+| queue-only 的已退休 authority 与未来 authority | 无 visible owner 时不能用本次反向测试推断应清或应等；先找 producer/status 顺序及失效证据，再审定策略（R47） |
+| future authority/turn 在旧 terminal 前到达 | 同source/runtime/authority的T2公开契约已闭合；不同authority不借用该PASS，真实Provider双turn仍NOT_RUN |
 | visual 256/257 overflow、buffered completion/control 副作用 | 先对照 provisional visual 的产品原则；不能照抄现在的 replay 当正确预期 |
 | close 后迟到 observer/raw callback 与未 flush thinking | 原关闭契约仍成立，不能因为 state owner 搬动复活旧输出或产生 side effect |
 | 两个真实 Provider turns、后台/长会话 | 原始 Provider record→wire→SQL→原页面逐层对照；fixture/public 双 lane PASS 不代替 |
 
-## 下一批的最小范围
+## 已抽取范围与下一批
 
-先只建立 quarantine 容量/顺序/退休的 public Cubit 保护，保留现有所有原断言。
-外部提供的消息身份/UTF-8 字节与规范化编码预算用于断言；不通过私有方法 spy 证明实现。
-发现行为缺口先在原接点 red→green，独立提交，不立即把未明策略包装进新 helper。
+本批先建立 public Cubit 保护，以外部消息身份/UTF-8 字节与规范化编码预算断言，
+没有通过私有方法 spy 证明实现。行为缺口在原接点 red→green 后独立提交，再迁移 owner。
+后续仍须保留原断言；未明策略不能照抄进 helper 后宣称正确。
 
 已实现的首个结构模块是 `RuntimeOverlayQuarantine`：仅拥有 insertion-order map 与 bytes，
 输入为overlay ID、原event、已由原预算编码计算出的bytes；返回accepted/duplicate/capacityRejected。
@@ -75,6 +82,7 @@ map、bytes、remove、clear已一起迁移，原状态已删除；clear/flush/c
 文件：apps/mobile/lib/features/chat_session/state/runtime_overlay_quarantine.dart；不新增异步close/join。
 
 visual pending 暂不迁移；256/257 与 future terminal 策略未证明前不把两种 queue 做通用 coordinator。
+下一批先核对原 mutation lease 的 runtime 归属（R48）；queue-only authority 待单独取证（R47）。
 每次结构提交保持原消息、容量、deadline 与拒绝行为；新增策略另起行为批。
 同输入的 public 契约、原七黑盒、全 Mobile/analyze/format、固定 SHA 独立复核及回退依赖共同验收。
 Bridge 或 fixture source 未改时用精确 Git tree/lock 对象继承既有门禁，不把继承写成重跑。
@@ -82,6 +90,6 @@ Bridge 或 fixture source 未改时用精确 Git tree/lock 对象继承既有门
 ## 接手与回退
 
 先核对 PROCESS 的当前断点与 HEAD/status，不能将红灯 checkpoint 当运行候选。
-C1c 修复涉及原 Cubit、StreamingStateCubit 、status 协议/Bridge producer 与二十项测试；先保留行为保护再讨论结构回退。
-未来 quarantine 结构回退必须迁回完整 map/bytes/remove/clear，原 admission/alias/terminal 顺序保留。
+C1c 修复涉及原 Cubit、StreamingStateCubit、status 协议/Bridge producer 与二十一项 terminal 测试；先保留行为保护再讨论结构回退。
+quarantine 结构回退必须迁回完整 map/bytes/add/remove/clear，原 admission/alias/terminal 顺序保留。
 保存每条 red 收据、冻结输入与最终 clean 门禁；源码 PASS、Provider/设备、Bridge 部署与发布分别报告。

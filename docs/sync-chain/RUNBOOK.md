@@ -31,7 +31,10 @@
 | canonical 不可变准备、duplicate 判定、原输入 receipt 证据 | detached_timeline_projection.dart 的 candidate | R30–R32 |
 | 整体 admission、当前 overlay 筛选、状态应用与 receipt/alias 消费 | 原 Cubit / candidate.compose | R26/R28/R30–R34 |
 | subscribe 实际发送快照、匹配接受补发及失效清理 | SyncService._rememberSubscriptionFocusAtSend / _reconcileSubscriptionFocus / 原发送出口 | R35/R36；十七项与 held 原页面 red/green |
-| runtime 完成、stream 关闭与实际 layout | 原 Bridge/Service/Cubit streaming handler / layout | R09/R29/R35；R29 接受/折叠事实待定位 |
+| runtime status attachment 身份生产、失效转换与持久 JSON | 原 Bridge statusFromRuntime / Dart protocol / Repository status JSON | R41/R42；不能把runtime ID当authority |
+| stream 接受revision、socket终态ticket与新视觉清理 | StreamingStateCubit / 原 Cubit status 接点 | R37–R42/R46；旧mutation lease另看R48 |
+| quarantine map/bytes、FIFO快照、容量拒绝、remove/clear | runtime_overlay_quarantine.dart | R43/R44；admission/apply/accepted IDs仍在原Cubit，R47策略未审定 |
+| runtime 完成、stream 关闭与实际 layout | 原 Bridge/Service/Cubit streaming handler / layout | R09/R29/R35/R37；历史R29归因仍未知 |
 
 调度器只接受不可变的身份/观察值和三个窄回调：判断当前操作、执行既有修复、重新观察缓存。
 它没有数据库、Gateway 或页面对象。route 或 manual refresh 导致 focus 离开，与 thread reset 调用 clearTarget；
@@ -124,6 +127,11 @@ cd apps/mobile
   test/chat_session_cubit_test.dart \
   test/chat_process_layout_test.dart
 "$CCPOCKET_FLUTTER_BIN" test --no-pub --reporter expanded --concurrency=1 \
+  test/detached_terminal_streaming_test.dart \
+  test/detached_runtime_overlay_queue_test.dart \
+  test/models/conversation_sync_v2_protocol_test.dart \
+  test/features/session_list/cache/session_catalog_cache_repository_test.dart
+"$CCPOCKET_FLUTTER_BIN" test --no-pub --reporter expanded --concurrency=1 \
   test/blackbox/conversation_latest_turn_gap_receiver_test.dart \
   test/blackbox/conversation_live_segment_receiver_test.dart \
   test/blackbox/conversation_full_page_test.dart
@@ -135,7 +143,9 @@ cd apps/mobile
 
 ```bash
 cd ../..
-npm run test:bridge
+cd packages/bridge
+"$CCPOCKET_NODE" node_modules/vitest/vitest.mjs run
+cd ../..
 "$CCPOCKET_NODE" node_modules/typescript/bin/tsc --noEmit -p packages/bridge/tsconfig.json
 git diff --check
 ```
@@ -148,11 +158,16 @@ git diff --check
 调整其他平台发布工作流时，也须确认其黑盒测试前置条件，不能把缺少 dist 改成静默跳过。
 黑盒 trace 含隔离 fixture 的原始 RPC、Bridge/client 帧、SQLite 条目 hash 与页面断言；
 可设置 CCPOCKET_CHAIN_TRACE_PARENT 将下次 fixture trace 留在持久证据目录。
-以上并发度对应 C1a/C1b 的最终本地全量收据；完整默认并发与云 CI 未在本轮验收。
+Vitest 位于 packages/bridge/node_modules，TypeScript hoisted 到根 node_modules；不要混用 cwd。
+以上并发度对应 C1a–C1d 的最终本地全量收据；完整默认并发与云 CI 未在本轮验收。
 R29 原四文件组合在当前 clean adf337ea 默认并发 50 PASS，仅证明这次有限重放。
 早期并发 full-page 折叠等待 FAIL 的输入/投影/宿主时序仍待归属，不能因串行 PASS 删除该记录。
 另有 C1b 两次 commentary B 可见性 FAIL，见 R35；经确定性交错旧 Service red / 修复 green 关闭选定窗口，
-原 FAIL 仍保留。最新产品 ce51e280 / 完整测试输入 adf337ea 的全量与独立复核见 E041。
+原 FAIL 仍保留。C1b 的产品 ce51e280 / 测试输入 adf337ea 门禁见 E041。
+最新 C1c/C1d 完整产品/测试输入为 da3d3f6：3370 PASS / 4 SKIPPED、Bridge 2546 PASS / 1 SKIPPED，
+原七黑盒及固定 SHA 独立复核通过（E059）。Bridge build 由 E053 相同 tree 继承；noEmit 是实际重跑。
+2f95d6d0 仅测试写法复查，40 项及完整 analyze/format 通过，1017 info 完整文本比对无新增（E060）。
+产品、依赖和黑盒 tree 未变化；保留完整 SHA 与样式 SHA 的区别，不虚构第二次全量。
 页面失败快照含 SQL、Cubit、renderedText/disclosure，跨 await 的快照不是原子快照。
 runtime-overlay-origin 在 Provider 发射回调采样，早于生产 sessionMessage，不代替其实际判定事实。
 焦点责任与重放见 RUNTIME-ITEM-BOUNDARY；旧折叠等待的下一步见 R29-FOLD-ENTRY。
@@ -188,8 +203,14 @@ E036 只有测试观测，不是 R35 修复，撤掉它也不能删除原断言�
 E039 焦点行为只在 Service，E040 的 held FIFO 闸门只在测试 fixture。
 回退行为保留十七项保护与 held-page red；回退 fixture 不移除原五个黑盒/断言或改变期限。
 旧 Service 的单文件换回只用于隔离敏感性验证，已在 finally 恢复并核对 hash，不能部署红灯版本。
-下一步按 [R29-FOLD-ENTRY](R29-FOLD-ENTRY.md) 先记录 runtime/status 接受、canonical、stream 与折叠计数，
-再形成确定性 red；没有行为因果时继续留未知，不迁移 runtime queue。
+C1c/C1d 的身份 red ac4d72fc → 修复 1ee38207，future-turn red 4b59aee7 → 修复 c3fcab96，
+未知activity red ad94066c → 修复 16529517，与结构抽取 da3d3f6 分开审阅。
+回退 da3d3f6 须迁回完整 map/bytes/add/remove/clear，并保留此前行为保护和原 reset/flush/close 出口。
+若撤销可选 runtime status 身份，也要处理依赖它的新清理条件；不能保留不成立的验收声明。
+authority 清理反向测试仅覆盖已有 visible owner，queue-only waiting 仍按 R47 单独取证。
+下一批先梳理原 mutation lease 的远端身份归属与公开发送校验（R48），再确定性证明疑点。
+[R29-FOLD-ENTRY](R29-FOLD-ENTRY.md) 继续登记旧观察：没有输入/接受/渲染的因果证据便留未知。
+visual pending 的 256/257 策略未审定，不因 quarantine 完成就一起抽取。
 既有其他分页/控制路径的相似交错仍待各自证明，不从 older 两个出口的修正推断它们已经正确。
 不扩大到 Cubit 全面重写、Bridge 总路由重写或 V4 候选整合。
 

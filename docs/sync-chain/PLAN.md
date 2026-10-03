@@ -22,8 +22,9 @@ main 已有未跟踪资料，不纳入本批、不覆盖；V4 是独立候选线
 | B2 | 抽单种历史分页生命周期，再评估共享逻辑 | 请求身份、终态、deadline、过期响应及取消都有验证 |
 | C1a | 收拢页面异步缓存读取的 owner、dirty、接受与失效；已完成 E029 | 真实 SQL/原页面契约、完整读取接点、全量源码门禁与固定 SHA review |
 | C1b | canonical prepare/admission/compose、后置提示确认及 pending focus 行为修复已完成 E041 | 十五项 canonical、十七项焦点保护及原页面因果 red/green；固定输入全量与独立复核通过 |
-| C1c | 终态/ticket/runtime身份的选定修复；历史R29仍未知 | 公开red→green、原七黑盒、最终完整门禁与固定SHA复核 |
-| C1d | 已证明quarantine容量/退休后，map/bytes迁为单一owner | 十三项public队列契约；结构保持原策略，完整门禁与取消接点复核 |
+| C1c | 终态/ticket/runtime身份及未知 activity 的选定修复已完成 E059/E060；历史R29仍未知 | 公开red→green、原七黑盒、完整门禁与固定SHA复核 |
+| C1d | quarantine map/bytes 单 owner 已完成 E059/E060 | 十三项public队列契约；结构保持原策略，完整门禁与取消接点复核；queue-only authority策略未审定 |
+| C1e | 先核对原 mutation lease 的远端 runtime 归属，记录旧版兼容用途与实际发送校验 | 不借用视觉清理 PASS；公开 red 与 read-only/控制/设置正反保护各自成立后才窄修 |
 | C2 | 按领域逐批抽 Bridge handler | 连接、认证、序列、权限归属不重复实现 |
 | D | 按调用/版本矩阵退役旧分支，更新唯一文档入口 | 确认路径无支持用途；删除对应状态与文档，而非只藏入口 |
 
@@ -34,7 +35,8 @@ C1b 已在原投影模块收拢 canonical 候选准备/接受，并保留 Cubit 
 订阅待确认时的焦点遗漏已在原 owning path 证明并修复；责任与证据见
 [RUNTIME-ITEM-BOUNDARY](RUNTIME-ITEM-BOUNDARY.md)。下一步按 [R29-FOLD-ENTRY](R29-FOLD-ENTRY.md)
 保留旧折叠等待未知。C1c已证明独立终态契约与runtime身份缺口，C1d已迁移quarantine唯一owner；
-责任与缺口见RUNTIME-STATUS-IDENTITY / RUNTIME-QUEUE-ENTRY，最终门禁待E058冻结。
+责任与缺口见RUNTIME-STATUS-IDENTITY / RUNTIME-QUEUE-ENTRY，最终门禁见E059/E060。
+下一批先证明原控制lease的runtime归属；queue-only authority和visual overflow仍不得当已审定策略迁移。
 当前默认并发四文件重放50 PASS不关闭旧失败；
 运行/展示链未据本次全量 PASS 整体验收。
 后续大类不会在同一批重写。
