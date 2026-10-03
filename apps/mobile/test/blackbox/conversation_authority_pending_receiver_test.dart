@@ -27,13 +27,32 @@ Future<HarnessReadyResult> _waitForOwnedHarnessReady(
   Duration timeout = const Duration(seconds: 15),
   void Function(Map<String, dynamic> response)? onControl,
 }) async {
+  HarnessReadyResult? harness;
   try {
-    return await waitForHarnessReady(
+    harness = await waitForHarnessReady(
       process,
       timeout: timeout,
       onControl: onControl,
     );
+    final ready = jsonDecode(harness.readyLine.substring(6));
+    if (ready is! Map<String, dynamic>) {
+      throw const FormatException('READY must contain an object');
+    }
+    for (final field in [
+      'url',
+      'threadId',
+      'turnId',
+      'traceRoot',
+      'projectPath',
+    ]) {
+      final value = ready[field];
+      if (value is! String || value.isEmpty) {
+        throw FormatException('READY requires a nonempty $field');
+      }
+    }
+    return harness;
   } catch (_) {
+    await harness?.dispose();
     process.kill(ProcessSignal.sigterm);
     await process.exitCode.timeout(
       const Duration(seconds: 10),

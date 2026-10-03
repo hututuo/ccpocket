@@ -1769,3 +1769,17 @@ producer snapshot/wire/SQL/page核对见c1f-final-owned-wire-sql-page-audit.json
 因此将格式错误/缺字段也纳入同一owned startup出口，不扩大生产或公共helper范围。
 先增加两个真实Node合同：不合法JSON与合法JSON但缺必需字段；收到READY后仍keepalive，
 预期FormatException且owned child已退出。red时测试finally兜底清自己的process；根审实现后再固定验证。
+
+## E072 — 非法READY先证明red，验证放入同一自建进程清理出口
+
+red checkpoint `2f63e1773eee95c05c9078ed3ff210c0be25c7db` clean：
+`c1f-malformed-ready-red` 0 PASS / 2 FAIL，1 / 3.052秒。两个真实Node进程发出READY后keepalive，
+wrapper却直接返回HarnessReadyResult；非法JSON与缺字段都没有进入其清理出口。
+用例自身finally回收捕获的child，保留red日志，不遗留生产或其他任务进程。
+
+窄修在新测试owned wrapper内解析READY对象，并验证本用例使用的五个非空String字段：
+url、threadId、turnId、traceRoot、projectPath。解析或形状失败先取消已取得的输出订阅，
+然后沿同一SIGTERM、join、必要时SIGKILL出口退休本测试创建的Process，再抛原错误。
+原共享helper、原七黑盒、产品lib、Bridge和依赖没有改动，业务等待与呈现/权限断言保持原样。
+固定输入后运行8条真实接收链、3条真实子进程清理合同与60条公共队列/权限/终态合同，
+目标静态/格式及独立只读复核另记；3396项完整Mobile门禁不因新增测试自动增加。
