@@ -1727,3 +1727,19 @@ Root进一步发现测试只在mount后load canonical一次；status/overlay已�
 与control/overlay共同join，挂载状态观察器的gate不变，原10秒期限及全部业务断言保留。
 这只是新测试的因果屏障修正，未修改生产receiver、SQL写入、原七黑盒、Bridge或依赖。
 新的冻结输入、同组合与静态复查另记；原67/1 FAIL和两份green收据都保留。
+
+## E069 — 固定canonical屏障通过，独立复核另发现READY失败清理P2
+
+`0cc0c0a9c7896b655fcfbc3fd348c7416d31af9a` clean：
+`c1f-final-committed-receivers-and-authority-contracts` 68 PASS，0 / 32.999秒；
+目标analyze无诊断，0 / 16.134秒；format单文件0 changed，0 / 0.459秒。
+c1f-final-producer-wire-sql-page-audit.json核对真实status sequence26先于overlay27，
+runtime snapshot、wire、SQL与页面轨迹的runtime/authority/turn一致，RPC item/completed来自同一fixture item。
+
+固定SHA GPT-6 Luna/max只读review确认初始化、canonical提交屏障和scope，没有产品问题或canonical假阳性finding；
+但新测试在外层finally之前等待READY，若15秒超时且harness仍活着，原waitForHarnessReady只取消输出订阅，
+会遗留自建子进程。这是测试设施P2，必须单独关闭，不能计作无finding验收。
+
+先新增真实Node子进程的失败契约：只运行keepalive且不发READY，100ms READY timeout后应已退出；
+原real receiver的15秒启动期限及所有业务断言不变。测试finally只退休本用例自己创建的process。
+新owned wrapper先转调原helper，保存red后再补kill/join清理；未修改公共helper、原七个黑盒或生产服务。

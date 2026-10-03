@@ -22,9 +22,40 @@ import 'harness_ready.dart';
 
 class _AuthorityHttpOverrides extends HttpOverrides {}
 
+Future<HarnessReadyResult> _waitForOwnedHarnessReady(
+  Process process, {
+  Duration timeout = const Duration(seconds: 15),
+  void Function(Map<String, dynamic> response)? onControl,
+}) => waitForHarnessReady(process, timeout: timeout, onControl: onControl);
+
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
   setUpAll(sqfliteFfiInit);
+
+  test('a READY timeout reaps its owned harness process', () async {
+    final process = await Process.start(
+      Platform.environment['CCPOCKET_NODE'] ?? 'node',
+      ['-e', 'setInterval(() => {}, 1000)'],
+    );
+    try {
+      await expectLater(
+        _waitForOwnedHarnessReady(
+          process,
+          timeout: const Duration(milliseconds: 100),
+        ),
+        throwsA(isA<TimeoutException>()),
+      );
+      // This fixture never announces READY and otherwise runs forever. An
+      // exit here proves startup failure retired the child, not just a timer.
+      expect(
+        await process.exitCode.timeout(const Duration(seconds: 1)),
+        isNot(0),
+      );
+    } finally {
+      process.kill(ProcessSignal.sigterm);
+      await process.exitCode.timeout(const Duration(seconds: 2));
+    }
+  });
 
   testWidgets(
     'real authority committed before page observation releases a pending overlay once',
@@ -54,10 +85,16 @@ void main() {
             environment: {'CCPOCKET_CHAIN_PROVIDER_MODE': 'stdio-json-rpc'},
           );
           final controls = StreamController<Map<String, dynamic>>.broadcast();
-          final harness = await waitForHarnessReady(
-            process,
-            onControl: controls.add,
-          );
+          late final HarnessReadyResult harness;
+          try {
+            harness = await _waitForOwnedHarnessReady(
+              process,
+              onControl: controls.add,
+            );
+          } catch (_) {
+            await controls.close();
+            rethrow;
+          }
           final ready =
               jsonDecode(harness.readyLine.substring(6))
                   as Map<String, dynamic>;
