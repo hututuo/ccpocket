@@ -71,7 +71,9 @@ C1g随后仅新增Bridge组合测试/harness，原293个Bridge文件及全部Mob
 错误保留旧A的敏感性实验按预期FAIL（应0实际1），finally逐字节恢复源码后完整Bridge重放 **2547 PASS / 1 SKIPPED**，
 typecheck/语法及固定SHA只读review通过。首次全量的既有catalog监听5秒超时仍独立保留（R53）：
 目标9项及完整重放PASS不能关闭其未知因果。精确收据和5份trace hash见E074–E077 / supplementalC1g。
-下一批[authority生产/消费入口](QUEUE-AUTHORITY-ENTRY.md)接真实Mobile/SQL/原页面，证明已接收旧A与未观察新B（C1h）；
+C1h已实际执行并在b493e9ea保存自然equal时钟的消费red（R54）：B已被原页面接纳，旧A仍pending1/220bytes；B新item窗口PASS。
+定位与窄修顺序见E078–E080，当前新增合同未闭合，不据旧全量宣称新候选通过。
+后续[authority生产/消费入口](QUEUE-AUTHORITY-ENTRY.md)保留合法未来事件，携带原Service真实SQL commit顺序证明旧A退休；
 R47完整策略、overlay自身await后的replacement、无runtime字段归属及visual pending 256/257仍未验收。
 
 接手顺序：

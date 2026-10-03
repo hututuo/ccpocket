@@ -1926,3 +1926,20 @@ actual A已wire/SQL并pending1，originalreplaceCodexSession已commit同ID新pro
 不补发伪造init、不手造status/time/authority、不放宽期限或移除队列/合法canonical断言。
 新增记录原页面mount前后实际status时间，避免把稍后自然推进的status误作相等窗口已验收。
 固定修正测试输入后重跑；产品与既有fixture未改。
+
+## E080 — C1h自然相等时钟的真实消费red
+
+修正屏障后的b493e9ea clean：c1h-original-commit-barrier-receivers 1 PASS / 1 FAIL，1 / 4.011秒。
+false窗口原页面确已观察同ID不同UUID的B且mutation权限属于B，但旧A pending仍1/220 bytes，预期0；
+A overlay observedAt、B SQL/status及mount前后的page status observedAt自然完全相等，未注入墙钟。
+true窗口B实际新item：未观察时A+B pending2，原Updater接纳B后A退/B单次，canonical A+B各一次，pending/bytes/overlay归零。
+原red及六类trace hash、同subscription的A overlay sequence早于B status sequence见c1h-actual-equal-clock-red-audit.json。
+目标analyze无诊断0 / 13.981秒、format0 changed0 / 0.461秒，不关闭行为FAIL；本checkpoint不是完整候选。
+
+因果接点：原same-ID replacement复制lastActivityAt；没有visible owner时reconcile早退，
+flush只凭exact authority+turn或严格更晚observedAt判定，equal时无法区分旧A/未来authority。
+现有Service已有同subscription V2 sequence，SQL完整status batch先提交再发布，但status DTO到SessionList/Updater不带该顺序事实。
+不采用isAfter改为>=或UUID排序。下一窄修计划仅在原Service的真实SQL commit后附本地不可变receipt，
+由原status对象携带source/subscription/sequence，经原SessionList/Updater到Cubit；同来源/订阅严格后继的status才取得退休证据。
+receipt不从wire JSON接纳、不写wire/SQLite或新增DB迁移；缺失/旧订阅等仍保守等待，原owner保持唯一。
+先补等时间旧/未来、跨source/subscription、duplicate status receipt及reset保护，再修原flush并重跑原真实合同与公共保护。

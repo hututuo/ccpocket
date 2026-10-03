@@ -58,6 +58,7 @@
 | R51 | 新测试owned harness的READY失败清理 | 超时、非法JSON、缺必需字段时取消订阅、只回收captured child并等待exit；不遗留自己的进程 | PASS 3条真实Node keepalive合同，timeout及两条协议red保留，84493fc6的71项组合/目标静态/固定review通过。共享helper/原七黑盒/生产服务未变；E069–E073 |
 | R52 | actual同public ID process replacement × 原catalog capacity/public ACK | 实际新authority、原callback/status先发、旧A退休、新B单次wire，ACK恢复预算且close前清零 | PASS 固定911a4f60实际Bridge/SessionManager/CodexProcess/raw stdio，41页status164–204先于overlay205，旧A无wire；错误保留A敏感性FAIL、原hash恢复后完整2547/1及目标静态/固定review通过。仅Bridge catalog gate，不计Mobile/真实Provider或overlay专用await-after；E074–E077 |
 | R53 | 既有catalog rollout文件监听的全量并发时序 | 原watch输入在既有期限内通知；失败需保留可归因证据 | FAIL 历史保留：911a4f60首次完整2546 PASS / 1 SKIP / 1 FAIL，reports the Codex thread id from a rollout filename超过5000ms；同期限目标9项和完整2547/1重放PASS，直接原因仍未知，不放宽期限或改原文件；E077 |
+| R54 | actual同ID replacement的Mobile已接收旧A、B未新通知/新item | 同subscription后继B已提交并被原页面观察时退休旧A；未观察新B与合法canonical各自保留 | FAIL b493e9ea真实两窗口1 PASS/1 FAIL：自然equal时间时B页/权限已接纳而A pending1/220bytes，应0；B新item窗口PASS。原red/trace保留，先补真实commit顺序receipt与未来事件反向保护，未修前不是可验收候选；E078–E080 |
 
 R09/R10 的最上游是隔离 Provider fixture，使用真实 Bridge、协议、SQLite 和页面相关代码；
 即使 PASS，也只证明接收闭环，不冒充 R13/R14。
