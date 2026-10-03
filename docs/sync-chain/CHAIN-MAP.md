@@ -128,6 +128,21 @@ visual pending的256/257策略仍在原Cubit，尚未审定，不借quarantine�
 防止误授予C、替换合法C或取消合法image lease。无binding只读、无ID旧组合与durable target保留；R48/R49分列。
 新比较不增加状态owner，source adoption保持原顺序；R47生产/消费顺序见QUEUE-AUTHORITY-ENTRY。
 
+## C1f：status发送、SQL提交与页面接纳分别取证
+
+| 接点 | 唯一owner与当前事实 | C1f证据或剩余边界 |
+|---|---|---|
+| process authority与public runtime ID | 原SessionManager / CodexProcess；replaceSessionId可复用public ID而创建新process与opaque authority | 同ID并不证明authority相同，UUID不能排序；replacement/capacity组合仍R47 |
+| overlay生产与status排序 | 原Bridge V2 handler；实际runtime snapshot生成identity，statusProjection及sent/pending statusState约束发送 | pending statusState仅表示Bridge排队，不表示Mobile应用；await capacity前后分别复核旧事件 |
+| Mobile提交顺序 | 原SyncService._v2MutationTail FIFO；status完整batch先await Repository事务，再发布更新 | 原接收器与真实SQL，匹配status sequence37先于overlay38；无重排wire或第二写入者 |
+| SessionList状态与页面通知 | 原SessionList applyCommittedStatusDelta先更新map，再经异步catalogSnapshotChanges通知原Updater | SQL与SessionList可已有status而页面尚未挂载状态观察器；不从发送/提交推断page applied |
+| overlay隔离/接纳与canonical接替 | 原Cubit admission/flush与原DurableSessionPreviewUpdater | R50：未观察authority时pending=1且不可mutation；原Updater接纳后pending/bytes=0、单条assistant；同一页面canonical接替后runtimeOverlayCount=0 |
+
+固定84493fc6的真实RPC item/completed、runtime snapshot、wire、SQL读取断言及三段页面轨迹身份一致。
+有限gate只延迟新用例的状态Updater挂载，既有接收/数据库/业务期限未替换；不证明旧authority替换应如何清理。
+R51只保护新测试自己创建的harness：READY超时、非法JSON或缺必需字段先取消订阅、终止并等待child退出。
+产品、Bridge、共享harness helper及原七黑盒未改，完整3396/4保留在原输入；证据见E073 / ACCEPTANCE.json。
+
 ```mermaid
 flowchart LR
   P[Provider / 隔离 fixture] --> B[Bridge / RPC 转换]

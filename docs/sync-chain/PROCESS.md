@@ -5,14 +5,15 @@
 - 时间：2026-10-03（Asia/Shanghai；此前条目保留当时记录）。
 - 分支：`codex/sync-chain-extraction-20261001`。
 - 起始 SHA：`930f1267e949c6cf2095761cc71c43cca08c6dc3`。
-- 阶段：A0–A3 / B1、B2、C1a、C1b、C1c/C1d 与 C1e 的选定接缝已完成源码门禁；下一入口是 R47 的实际生产/消费顺序，尚不搬 visual pending。
+- 阶段：A0–A3 / B1、B2、C1a、C1b、C1c/C1d 与 C1e 的选定接缝已完成源码门禁；C1f已补原生产/提交/页面观察的正向等待及owned测试清理，下一入口是R47同ID替换/capacity组合，尚不搬visual pending。
 - 最新完整门禁产品/测试 SHA：`16196f05bf60943c1ebbc49475353a7b085fa1a4`；C1e 在原status接点拒绝已知不同runtime，不新增权限owner。
 - 仅测试import后续 SHA：`8178295d18f25a1cafc8d73fb039e2f664065ba9`，产品/依赖/黑盒tree不变；26项及完整静态分析另查。
+- C1f仅新增测试/文档，冻结输入 `84493fc65bbabf18cd41b18dbdbf7c298e869346`：71项选定组合PASS（8真实链、3自建process、60public），新文件analyze无诊断/format不变，固定SHA独立review无新增P0–P2。未重跑完整Mobile/Bridge。
 - 最新全量 Mobile 3396 PASS / 4 SKIPPED（--concurrency=1），Bridge 2546 PASS / 1 SKIPPED按相同tree继承E059；build/typecheck/格式通过，继承与重跑分别登记。
 - 最终 analyze 0 error/warning，1017 既有 info 完整文本逐项无新增；固定产品 SHA 独立复核无本次新增 P0–P2。
 - R35 pending focus 缺陷已确定性旧 Service red → 窄修 → 相同原页面 green，关闭选定交错；旧两次 FAIL 与恢复收据保留。
 - C1c `095cab00` clean 全量 3344 PASS / 4 SKIPPED / 1 FAIL，不是可验收候选；新 R40 两项 red 和诊断见 E049。
-- 已接受最新门禁证据见E064/E065及ACCEPTANCE.json；C1e red→green与回退见E061–E065。
+- 已接受完整门禁见E064/E065，C1f选定补充见E073及ACCEPTANCE.json；C1e red→green与回退见E061–E065，C1f的fixture red与敏感性恢复见E066–E073。
 - R48已知runtime身份的控制接纳选定契约闭合；R47 queue-only策略及R49无字段旧组合的完整远端归属仍未验收，不据此宣称控制全链正确。
 - E024 的历史并发折叠等待 FAIL 尚未归属；当前同四文件默认并发 50 PASS，不能据此关闭旧失败或宣称设备/运行链验收。
 - 真实 Provider、模拟器/真机、生产 Bridge、云 CI、OTA/发布 NOT_RUN；原生 UI 自动化工具缺失为 BLOCKED。
@@ -1783,3 +1784,36 @@ url、threadId、turnId、traceRoot、projectPath。解析或形状失败先取�
 原共享helper、原七黑盒、产品lib、Bridge和依赖没有改动，业务等待与呈现/权限断言保持原样。
 固定输入后运行8条真实接收链、3条真实子进程清理合同与60条公共队列/权限/终态合同，
 目标静态/格式及独立只读复核另记；3396项完整Mobile门禁不因新增测试自动增加。
+
+## E073 — C1f固定输入接受、真实轨迹与恢复证明
+
+最终测试/账本输入 `84493fc65bbabf18cd41b18dbdbf7c298e869346` clean：
+`c1f-final-validated-receivers-and-authority-contracts` 71 PASS，0 / 35.305秒；
+其中8条真实接收链、3条真实Node keepalive清理合同、13项queue / 26项权限 / 21项terminal公共保护。
+`c1f-final-validated-receiver-analyze`目标新文件无诊断，0 / 15.580秒；
+`c1f-final-validated-receiver-format`单文件0 changed，0 / 0.448秒。
+固定SHA GPT-6 Luna/max只读复核确认READY超时及非法/缺字段清理finding关闭，无本次新增可证明P0–P2；
+canonical/init/observer有限gate结论继承前次，不将只读review当独立测试运行。
+
+真实trace核对status sequence37先于overlay38；actual runtime/opaque authority/turn来自原producer snapshot，
+RPC item/completed、wire、SQL原读取断言与三段page轨迹匹配。未观察时pending1且无控制权限，
+原Updater接纳后pending/bytes0、单条assistant；同一Updater state的canonical接替后runtimeOverlayCount0。
+证据为c1f-final-validated-wire-sql-page-audit.json，八份trace文件hash保留。
+
+在同固定84493fc6输入上重复临时错误提前拒绝策略，
+`c1f-final-authority-premature-reject-mutant`按预期FAIL，1 / 3.463秒：pending应1实际0。
+这不是产品red；实验只有未提交隔离改动，finally完整恢复产品SHA256
+`78eb71c684d21e02a1bf5622c77ee179a18f36bd7691f958d3cf53a030df9679`且Git clean。
+恢复证明c1f-final-authority-sensitivity-restoration.json；恢复后的
+`c1f-final-restored-owned-receiver` 4 PASS，0 / 3.135秒，未因hash往返再伪装一轮全量。
+
+产品lib、Bridge、依赖对象与16196f05相同，原三个黑盒文件/共享helper blob未变；
+新增测试使整个blackbox tree变化，不能再把该tree称作未变。完整Mobile3396/4仍属16196f05，
+Bridge2546/1、build/typecheck按相同tree继承旧收据。全部实际SHA/dirty diff/hash与scope见ACCEPTANCE.json。
+初始67/1 fixture启动竞态、READY timeout red、malformed两条red及各候选green都保留；green不覆盖旧失败。
+
+新增R50正向未观察authority等待与R51 owned清理已在选定范围接受。R47完整queue-only replacement策略仍NOT_RUN：
+已定位实际同public runtime ID可产生新的CodexProcess/authority，但原callback+capacity等待尚无组合合同。
+下批C1g先补该合同，再接Mobile/SQL/原页面判断旧A与未观察新B，不提前统一Bridge/Cubit两个queue。
+R45/R49及历史R29/095cab00直接归因继续独立，真实Provider/设备/生产/云CI/OTA/签名安装/发布NOT_RUN，原生UI工具BLOCKED。
+README、PLAN、CHAIN-MAP、矩阵、RUNBOOK与runtime入口同步到本断点；所有工作仅在隔离分支本地提交。

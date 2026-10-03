@@ -136,6 +136,7 @@ cd apps/mobile
 "$CCPOCKET_FLUTTER_BIN" test --no-pub --reporter expanded --concurrency=1 \
   test/blackbox/conversation_latest_turn_gap_receiver_test.dart \
   test/blackbox/conversation_live_segment_receiver_test.dart \
+  test/blackbox/conversation_authority_pending_receiver_test.dart \
   test/blackbox/conversation_full_page_test.dart
 "$CCPOCKET_DART_BIN" analyze .
 "$CCPOCKET_FLUTTER_BIN" test --no-pub --reporter expanded --concurrency=1
@@ -173,6 +174,29 @@ R29 原四文件组合在当前 clean adf337ea 默认并发 50 PASS，仅证明�
 最新C1e完整输入16196f05：3396 PASS / 4 SKIPPED、固定SHA review通过；Bridge tree不变继承E059。
 8178295d仅删unused test import，26项与完整analyze/format另查，0 error/warning、1017既有info逐项无新增。
 完整收据与警告FAIL保留见E064/E065；精确hash及继承/NOT_RUN/BLOCKED见ACCEPTANCE.json。
+C1f固定84493fc6只新增测试与账本：71项组合PASS（8条接收链、3条真实子进程合同、60条公共保护），
+目标文件analyze无诊断、format无变化、固定SHA只读复核无新增P0–P2；未重跑完整Mobile/Bridge。
+新用例仅延迟原statusUpdater挂载，SQL原status/timeline提交和Provider init分别有因果屏障。
+敏感性实验按预期FAIL（pending应1实际0），产品hash finally恢复且Git clean；恢复后新文件4项PASS。
+READY超时与非法/缺字段red、fixture启动67/1候选FAIL及各候选green保留在E066–E073。
+新的精确补充门禁、原七黑盒/共享helper blob未变证明与review见ACCEPTANCE.json的supplementalC1f。
+
+C1f的同输入71项复跑（在apps/mobile目录、先按上文构建真实Bridge）：
+
+```bash
+"$CCPOCKET_FLUTTER_BIN" test --no-pub --reporter expanded --concurrency=1 \
+  test/blackbox/conversation_authority_pending_receiver_test.dart \
+  test/blackbox/conversation_live_segment_receiver_test.dart \
+  test/blackbox/conversation_latest_turn_gap_receiver_test.dart \
+  test/blackbox/conversation_full_page_test.dart \
+  test/detached_runtime_overlay_queue_test.dart \
+  test/detached_runtime_authority_test.dart \
+  test/detached_terminal_streaming_test.dart
+"$CCPOCKET_DART_BIN" analyze test/blackbox/conversation_authority_pending_receiver_test.dart
+"$CCPOCKET_DART_BIN" format --output=none --set-exit-if-changed \
+  test/blackbox/conversation_authority_pending_receiver_test.dart
+```
+
 页面失败快照含 SQL、Cubit、renderedText/disclosure，跨 await 的快照不是原子快照。
 runtime-overlay-origin 在 Provider 发射回调采样，早于生产 sessionMessage，不代替其实际判定事实。
 焦点责任与重放见 RUNTIME-ITEM-BOUNDARY；旧折叠等待的下一步见 R29-FOLD-ENTRY。
@@ -215,7 +239,11 @@ C1c/C1d 的身份 red ac4d72fc → 修复 1ee38207，future-turn red 4b59aee7 �
 authority 清理反向测试仅覆盖已有 visible owner，queue-only waiting 仍按 R47 单独取证。
 C1e已按26项public输入窄修已知remote runtime矛盾；产品16196f05与测试import8178295d分开审阅。
 回退产品保留旧B拒绝、合法C owner/image lease、unbound只读与旧组合/durable target断言；不把red checkpoint运行。
-无字段旧组合完整归属仍R49。下一批按QUEUE-AUTHORITY-ENTRY证明R47的真实producer/status/SQL/page顺序再定策略。
+无字段旧组合完整归属仍R49。C1f的R50正向等待已取证，但同ID替换/capacity组合仍按QUEUE-AUTHORITY-ENTRY单独证明R47。
+C1f变更限新conversation_authority_pending_receiver_test.dart与文档，原共享helper/七黑盒不依赖它，产品无需回退。
+测试改动由32a8978d、8f671f4f、0cc0c0a9、3eef3b15、84493fc6及各red checkpoint分段记录，先审阅E066–E073。
+回退测试设施不能删除已定位的失败合同或更改业务期限以取得PASS；可在隔离checkout适配owned清理与因果屏障。
+后续same-ID replacement须保留真实SessionManager callback、capacity/ACK及新旧authority，不能复用R50宣称整段已验收。
 [R29-FOLD-ENTRY](R29-FOLD-ENTRY.md) 继续登记旧观察：没有输入/接受/渲染的因果证据便留未知。
 visual pending 的 256/257 策略未审定，不因 quarantine 完成就一起抽取。
 既有其他分页/控制路径的相似交错仍待各自证明，不从 older 两个出口的修正推断它们已经正确。

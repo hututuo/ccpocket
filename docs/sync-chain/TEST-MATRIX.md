@@ -13,10 +13,10 @@
 | R06 | 删除列表 64/2000/2001 边界 | entries/deletes 按各自预算 | PASS 相关 protocol 回归；E002/E004 |
 | R07 | 历史/最新修复并发 | 保留已提交前缀、顺序与分页游标规则 | PASS Service/Repository 相关回归；E004 |
 | R08 | 错误 source、订阅、sequence | fence / bounded recovery / last-good | PASS Service 回归与既有 blackbox 故障链；E002/E004 |
-| R09 | 真 Bridge → JSON → Dart → SQLite → Cubit/layout | 与 Provider fixture 的稳定 ID/顺序/内容相符 | PASS 最新三文件七用例，含 partial-summary / older-pages、pending-focus 与held-final原页面；16196f05全量3396/4内重新执行；旧mutation/R35 FAIL保留；E064/E065 |
+| R09 | 真 Bridge → JSON → Dart → SQLite → Cubit/layout | 与 Provider fixture 的稳定 ID/顺序/内容相符 | PASS 84493fc6四文件8条真实接收链（另3条process清理不计接收链），原七黑盒未改；C1f的71项组合通过。原七条亦在16196f05全量3396/4执行；旧mutation/R35/fixture启动FAIL保留；E064/E065/E073 |
 | R10 | stdio JSON-RPC 模式 | 不旁路生产 RPC 解码/分发 | PASS 基线 full-page；E002 |
 | R11 | SQLite 关闭重开 | durable 内容可恢复 | PASS 基线 receiver；E002 |
-| R12 | 全 Mobile analyze/tests | 无新增 error/warning/回归 | PASS 16196f05 clean 全量3396 PASS / 4 SKIPPED及固定SHA review无本次新增P0–P2；8178295d仅删unused test import，26项PASS、analyze 0 error/warning、1017既有info逐项同E041、format通过。原analyze warning FAIL、095cab00 FAIL及89084bcb review P2/red保留；E064/E065 |
+| R12 | 全 Mobile analyze/tests | 无新增 error/warning/回归 | PASS 16196f05 clean 全量3396 PASS / 4 SKIPPED及固定SHA review；8178295d仅删unused test import，26项PASS、完整analyze 0 error/warning、1017既有info逐项同E041。C1f只新增测试/文档，84493fc6的71项、目标文件analyze无诊断/format/独立review通过，未重跑全量。原analyze warning FAIL、095cab00 FAIL及89084bcb review P2/red保留；E064/E065/E073 |
 | R13 | 真实 Provider 新事件 | 原始记录与 Bridge/cache/page 对照 | NOT_RUN |
 | R14 | 模拟器 / 真机 / 生产 | 各自独立验收 | NOT_RUN；本轮原生 UI 自动化工具不可用为 BLOCKED，不能用 VM widget host 代替设备验收 |
 | R15 | 调度退避、失败预算、取消计时器、旧回调 | 1/2/4 秒重试、4 次失败封顶；取消后无重试，旧完成不清新 owner | PASS 抽取后四个 scheduler 用例；E007 |
@@ -51,9 +51,11 @@
 | R44 | T2 event先入隔离队列，随后退休T1显示 | 同source/runtime/authority、时间不旧的T2不被T1退休清空；原flush验证后应用 | PASS direct T2与先旧terminal两项public契约、3396项最新全量；两项red保留。同binding/authority范围，不扩张到future authority或真实双turn；E054/E055/E059/E064 |
 | R45 | visual pending 256/257策略 | 对照provisional visual原则审定溢出/重放/completion副作用 | NOT_RUN；只登记原现状，暂不迁移此队列；RUNTIME-QUEUE-ENTRY |
 | R46 | 正确runtime的unknown/unavailable快照保留旧idle | 保留的activity不取得新terminal清理资格；后续authoritative idle仍结束 | PASS 21项terminal+13项queue共34项及最新全量，原20 PASS/1 FAIL red保留；E056/E057/E059 |
-| R47 | queue-only authority replacement / future authority waiting | 分清已失效旧authority与合法未来authority；不能从有visible owner的测试推断一律清理 | NOT_RUN：原reconcile在无visible tracking时早退；Bridge sequenced/superseded与Cubit等待是不同阶段owner，真实producer/status/SQL/page顺序尚待证明。策略未审定，结构未改，见QUEUE-AUTHORITY-ENTRY / E065 |
+| R47 | queue-only authority replacement / future authority waiting | 分清已失效旧authority与合法未来authority；不能从有visible owner的测试推断一律清理 | NOT_RUN完整策略：实际同public ID replacement能产生新opaque authority已由源码定位；C1f真实producer的未观察authority合法等待另列R50 PASS。replacement callback+capacity待ACK与Mobile旧/新消费组合尚未共同证明，不据R50改策略；QUEUE-AUTHORITY-ENTRY / E073 |
 | R48 | 已知runtime身份的旧缓存与原mutation lease | 控制/设置/审批目标必须属于当前已证明owner；旧B既不能授予C权限，也不能替换合法C或取消其image lease；无binding仍只读 | PASS 选定契约：16行为red→green与cold-start两项candidate red→green，26项新契约/相关313项、16196f05全量3396/4及固定review通过；8178295d最终静态复查通过。无ID旧组合归属另列R49；E061–E065 / RUNTIME-AUTHORITY-ENTRY |
 | R49 | 无runtime身份字段的旧V2 / appServer组合 | 维持合法兼容用途，不伪造remote ID，不把原generation/source规则当完整远端归属证明 | NOT_RUN：旧V2合法lease、legacy idle、Desktop detach与durable target保护PASS；缺字段的连续A→B→C远端归属仍未证明，独立策略入口，E063 |
+| R50 | 实际producer authority已提交、页面尚未观察 | 合法事件仍bounded quarantine且无mutation；原Updater接纳一次，canonical在同页单次接替 | PASS 固定84493fc6真实Bridge/RPC/SQL/Service/SessionList/原Updater，status37→overlay38及三段轨迹身份匹配；错误提前拒绝敏感性FAIL、完整hash恢复后4项PASS。不是同IDreplacement或真实Provider验收；E066–E073 |
+| R51 | 新测试owned harness的READY失败清理 | 超时、非法JSON、缺必需字段时取消订阅、只回收captured child并等待exit；不遗留自己的进程 | PASS 3条真实Node keepalive合同，timeout及两条协议red保留，84493fc6的71项组合/目标静态/固定review通过。共享helper/原七黑盒/生产服务未变；E069–E073 |
 
 R09/R10 的最上游是隔离 Provider fixture，使用真实 Bridge、协议、SQLite 和页面相关代码；
 即使 PASS，也只证明接收闭环，不冒充 R13/R14。

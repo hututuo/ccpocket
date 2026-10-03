@@ -25,6 +25,8 @@ main 已有未跟踪资料，不纳入本批、不覆盖；V4 是独立候选线
 | C1c | 终态/ticket/runtime身份及未知 activity 的选定修复已完成 E059/E060；历史R29仍未知 | 公开red→green、原七黑盒、完整门禁与固定SHA复核 |
 | C1d | quarantine map/bytes 单 owner 已完成 E059/E060 | 十三项public队列契约；结构保持原策略，完整门禁与取消接点复核；queue-only authority策略未审定 |
 | C1e | 已知runtime身份的原mutation接纳公开red→窄修已完成，保留未绑定只读与旧版/独立target保护，E065 | 26项新契约、完整3396/4、最终静态复查与固定SHA review通过；无ID远端归属仍R49 |
+| C1f | 实际producer→wire→SQL→原页面的未观察authority等待证据及owned fixture清理已完成E073，产品未改 | 固定84493fc6的71项组合、目标静态/格式、错误策略敏感性与固定SHA复核；完整门禁仍属16196f05 |
+| C1g | 下一证据批：同public runtime ID的真实process replacement与Bridge capacity等待组合 | 真实新authority、原replacement callback、原V2 handler和ACK/capacity顺序共同证明；先给证据，不提前改queue-only策略 |
 | C2 | 按领域逐批抽 Bridge handler | 连接、认证、序列、权限归属不重复实现 |
 | D | 按调用/版本矩阵退役旧分支，更新唯一文档入口 | 确认路径无支持用途；删除对应状态与文档，而非只藏入口 |
 
@@ -37,7 +39,9 @@ C1b 已在原投影模块收拢 canonical 候选准备/接受，并保留 Cubit 
 保留旧折叠等待未知。C1c已证明独立终态契约与runtime身份缺口，C1d已迁移quarantine唯一owner；
 责任与缺口见RUNTIME-STATUS-IDENTITY / RUNTIME-QUEUE-ENTRY，最终门禁见E059/E060。
 已知runtime身份的原控制lease契约见RUNTIME-AUTHORITY-ENTRY / E065。
-下一批按QUEUE-AUTHORITY-ENTRY证明R47真实producer顺序；无ID远端归属和visual overflow仍不得当已审定策略迁移。
+C1f已证明未观察authority时的合法等待与canonical单次接替（R50），三个自建process失败出口有真实退出合同（R51）。
+下一批按QUEUE-AUTHORITY-ENTRY证明R47同ID替换/capacity组合；该组合仍未闭合前不扩大到C2 handler迁移。
+无ID远端归属和visual overflow仍不得当已审定策略迁移。
 当前默认并发四文件重放50 PASS不关闭旧失败；
 运行/展示链未据本次全量 PASS 整体验收。
 后续大类不会在同一批重写。

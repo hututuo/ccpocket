@@ -6,6 +6,9 @@ quarantine 已迁到 RuntimeOverlayQuarantine 唯一 owner，visual pending 仍�
 原七黑盒、typecheck/format 与固定 SHA 独立复核通过；最终 analyze 的测试写法复查见 E060。
 这些是选定源码门禁，历史 R29 和 `095cab00` 全量失败的直接归因仍未知。
 queue-only authority 留存是原有且未审定的策略，不能从当前十三项契约推断所有 authority 替换会清队列。
+C1f新增R50：真实producer status已入SQL但页面尚未观察authority时，原quarantine合法等待、原Updater接纳后单次canonical接替。
+固定84493fc6的71项选定组合/目标静态/独立复核通过（E073）；产品未改，完整3396/4仍在16196f05。
+这关闭的是未观察authority的正向等待，不关闭同public ID替换/capacity组合（R47）。
 
 ## 两套队列不能合并
 
@@ -62,7 +65,7 @@ JSON/真实 SQLite 与 Bridge producer 另保护可选 runtime 身份的生产�
 | 缺口 | 下一批需要验证的结果 |
 |---|---|
 | queue-only 的已退休 authority 与未来 authority | 无 visible owner 时不能用本次反向测试推断应清或应等；先找 producer/status 顺序及失效证据，再审定策略（R47） |
-| future authority/turn 在旧 terminal 前到达 | 同source/runtime/authority的T2公开契约已闭合；不同authority不借用该PASS，真实Provider双turn仍NOT_RUN |
+| future authority/turn 在旧 terminal 前到达 | 同source/runtime/authority的T2公开契约已闭合；R50只证明尚未观察authority的正向等待，不证明已有旧authority的replacement；真实Provider双turn仍NOT_RUN |
 | visual 256/257 overflow、buffered completion/control 副作用 | 先对照 provisional visual 的产品原则；不能照抄现在的 replay 当正确预期 |
 | close 后迟到 observer/raw callback 与未 flush thinking | 原关闭契约仍成立，不能因为 state owner 搬动复活旧输出或产生 side effect |
 | 两个真实 Provider turns、后台/长会话 | 原始 Provider record→wire→SQL→原页面逐层对照；fixture/public 双 lane PASS 不代替 |
@@ -83,7 +86,7 @@ map、bytes、remove、clear已一起迁移，原状态已删除；clear/flush/c
 
 visual pending 暂不迁移；256/257 与 future terminal 策略未证明前不把两种 queue 做通用 coordinator。
 C1e已完成已知runtime身份的原mutation接纳契约（R48），缺字段的完整远端归属仍R49。
-下一批按[authority生产/消费入口](QUEUE-AUTHORITY-ENTRY.md)单独取证queue-only策略（R47）。
+下一批按[authority生产/消费入口](QUEUE-AUTHORITY-ENTRY.md)组合真实same-ID replacement callback与capacity等待（R47）。
 每次结构提交保持原消息、容量、deadline 与拒绝行为；新增策略另起行为批。
 同输入的 public 契约、原七黑盒、全 Mobile/analyze/format、固定 SHA 独立复核及回退依赖共同验收。
 Bridge 或 fixture source 未改时用精确 Git tree/lock 对象继承既有门禁，不把继承写成重跑。

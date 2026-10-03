@@ -58,7 +58,14 @@ C1e随后证明并修复旧B状态与当前C runtime混用权限：16项实际�
 最终产品/测试 `16196f05` 完整Mobile **3396 PASS / 4 SKIPPED**，固定SHA独立复核无本次新增P0–P2；
 测试unused import后续 `8178295d` 的26项、analyze/format复查PASS，0 error/warning、1017既有info无新增。
 产品/依赖/黑盒tree相同，Bridge按相同tree继承E059门禁；精确收据见E064/E065及[门禁记录](ACCEPTANCE.json)。
-下一批先证明[queue-only authority生产/消费顺序](QUEUE-AUTHORITY-ENTRY.md)；
+随后C1f仅补接收与测试设施证据，未改产品、Bridge或依赖。固定测试输入 `84493fc6`：
+**71项组合PASS**（8条真实接收链、3条自建Node进程清理合同、60条公共队列/权限/终态保护），
+新增文件analyze无诊断、format无变化，固定SHA独立复核无新增P0–P2。
+真实producer的status先发送、SQL已提交而页面尚未观察authority时，合法overlay仍隔离、无控制权限；
+原Updater接纳后只出现一次，再由canonical在同一页面接替。错误提前删除策略会让该用例FAIL，恢复后4项PASS。
+READY超时及非法/缺字段协议导致的自建进程清理缺口均有red→green，原七黑盒及共享helper保持不变。
+完整3396/4仍归属16196f05，未把新增测试计作新全量。证据与失败保留见E066–E073 / ACCEPTANCE.json。
+下一批按[authority生产/消费入口](QUEUE-AUTHORITY-ENTRY.md)证明同public runtime ID替换与capacity等待组合（R47）；
 无runtime身份字段的旧组合远端归属及visual pending 256/257策略仍未验收。
 
 接手顺序：
