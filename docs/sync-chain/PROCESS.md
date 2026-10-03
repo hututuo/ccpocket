@@ -2003,3 +2003,14 @@ R54实际两个消费窗口与R55十项公开顺序合同接受；完整R47仍�
 历史R29/095cab00/R53原因继续未知，R45/R49仍NOT_RUN；设备、真实Provider、生产、云CI、OTA、签名安装/发布分别NOT_RUN，原生UI BLOCKED。
 回退检查顺序：7028b503设施→b493e9ea屏障→8c5002a9值/十项red→4e6d3d4a消费行为；保留红灯合同与合法新B/canonical断言。
 不把red checkpoint当运行候选。README/PLAN/地图/矩阵/入口/RUNBOOK与supplementalC1h同步；仅本地提交，未merge/push/部署。
+
+## E084 — C1i只补overlay自身capacity await后的真实替换合同
+
+父接受断点5c3cadaf，产品/测试4e6d3d4a的Mobile3412/4和Bridge原911a4f60的2547/1分别保留。
+仅允许改独立replacement测试harness并新增一个Bridge test；默认C1g catalog模式保留，Mobile产品/SQL/依赖不改。
+合法actual A item使用60,000字节正文（仍须原64KiB overlay frame/pending预算接受），只逐帧公开累计ACK释放原catalog/status进度。
+观察原sendPendingRuntimeOverlays调用原waitForOutboundCapacity是否确实登记A waiter，wrapper返回原Promise，不增加gate/reorder或直接调用私有send/drop。
+在A自身await仍pending时，原SessionManager真实同public ID替换process/UUID B，实际B item入pending；再用public ACK恢复。
+要求wait返回时已是B实际snapshot、旧A无wire且pending/bytes退休、新B完整status先于单次overlay、close前全部预算/等待者0。
+client ACK、原wait进入/返回、raw stdio、runtime origin与wire分别留trace；先冻结测试输入再运行，不从仅pending或catalog gate推断自身await。
+45秒owned child与60秒测试期限保持；强制timeout的后代进程树回收仍不扩张为已验收。正确结果未被实际证明前R56 NOT_RUN。

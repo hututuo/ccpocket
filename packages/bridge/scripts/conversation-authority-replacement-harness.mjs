@@ -18,6 +18,8 @@ import { startConversationAppServerFixture } from "./conversation-app-server-fix
 // source nor a generated dist build is swapped to install the test gate.
 const fixtureHome = process.env.CCPOCKET_REPLACEMENT_HOME;
 assert.ok(fixtureHome, "The caller must provide an isolated child home");
+const capacityGate = process.env.CCPOCKET_REPLACEMENT_GATE ?? "catalog";
+assert.ok(["catalog", "overlay"].includes(capacityGate));
 const projectPath = process.cwd();
 const threadId = "019f-authority-replacement-thread";
 const turnId = "turn-authority-replacement";
@@ -32,6 +34,9 @@ const providerReads = [];
 const frames = [];
 const stages = [];
 const origins = [];
+const clientFrames = [];
+const capacityTrace = [];
+const capacityObservers = [];
 const providerState = { revision: 1, active: false, completed: false, assistantItems: [] };
 const userItem = {
   type: "userMessage", id: "provider-user-replacement",
@@ -147,10 +152,12 @@ try {
 
   client = new WebSocket(`ws://127.0.0.1:${httpServer.address().port}`);
   function acknowledge(sequence) {
-    client.send(JSON.stringify({
+    const ack = {
       type: "conversation_sync_ack", protocolVersion: 2,
       subscriptionId, sequence,
-    }));
+    };
+    clientFrames.push(ack);
+    client.send(JSON.stringify(ack));
   }
   client.on("error", (error) => { clientError = error; });
   client.on("message", (raw) => {
@@ -195,7 +202,54 @@ try {
   }
   const oldItemId = "assistant-old-authority-pending";
   const newItemId = "assistant-new-authority-pending";
-  emitItem(oldItemId, "Old process commentary awaiting original capacity");
+  let oldOverlayWait;
+  let oldOverlayResolver;
+  let oldOverlayWaitSettled = false;
+  if (capacityGate === "overlay") {
+    const originalWait = handler.waitForOutboundCapacity;
+    // Observe the original call and return its exact Promise. This wrapper
+    // neither owns the capacity gate nor changes its result or scheduling.
+    handler.waitForOutboundCapacity = function (socket, current, payload) {
+      const before = new Set(current.capacityWaiters);
+      const result = originalWait.call(this, socket, current, payload);
+      const addedWaiters = [...current.capacityWaiters].filter((waiter) => !before.has(waiter));
+      if (payload.event === "runtime_overlay" &&
+          payload.message.message.id === oldItemId &&
+          addedWaiters.length > 0) {
+        assert.equal(addedWaiters.length, 1);
+        assert.equal(oldOverlayWait, undefined);
+        oldOverlayResolver = addedWaiters[0];
+        const entry = {
+          stage: "original-overlay-capacity-entered", overlayId: payload.overlayId,
+          runtimeId: payload.runtimeSessionId, authority: payload.authorityGeneration,
+          observedAt: payload.observedAt, turnId: payload.turnId,
+          estimatedFrameBytes: pending(oldItemId).bytes,
+          outstandingBytes: current.outstandingBytes, queuedBytes: current.queuedBytes,
+          capacityWaiters: current.capacityWaiters.size,
+          addedOriginalWaiters: addedWaiters.length,
+          pendingStatusState: current.pendingStatusState,
+          nextSequence: current.nextSequence,
+          caller: new Error().stack,
+          runtimeStates: bridge.localFeatures.listRuntimeConversationStates(),
+        };
+        capacityTrace.push(entry);
+        oldOverlayWait = entry;
+        capacityObservers.push(result.then((accepted) => {
+          oldOverlayWaitSettled = true;
+          capacityTrace.push({
+            stage: "original-overlay-capacity-returned", overlayId: payload.overlayId,
+            accepted, runtimeStates: bridge.localFeatures.listRuntimeConversationStates(),
+            outstandingBytes: current.outstandingBytes, queuedBytes: current.queuedBytes,
+            capacityWaiters: current.capacityWaiters.size,
+          });
+        }));
+      }
+      return result;
+    };
+  }
+  emitItem(oldItemId, capacityGate === "overlay"
+    ? "A".repeat(60_000)
+    : "Old process commentary awaiting original capacity");
   await waitFor(() => pending(oldItemId), "actual old process overlay pending");
   assert.equal(pending(oldItemId).payload.runtimeSessionId, runtimeId);
   assert.equal(pending(oldItemId).payload.authorityGeneration, oldAuthority);
@@ -203,6 +257,28 @@ try {
     outstandingBytes: state.outstandingBytes, queuedBytes: state.queuedBytes,
     capacityWaiters: state.capacityWaiters.size,
     oldOverlayId: pending(oldItemId).payload.overlayId });
+
+  if (capacityGate === "overlay") {
+    const deadline = Date.now() + 10_000;
+    while (!oldOverlayWait) {
+      assert.ok(Date.now() < deadline, "A must enter its own original capacity wait");
+      assert.equal(frames.filter((f) => f.event === "runtime_overlay").length, 0);
+      const sequence = state.outstanding.keys().next().value;
+      assert.ok(sequence, "Only an actual outstanding public frame can be ACKed");
+      acknowledge(sequence);
+      await waitFor(() => !state.outstanding.has(sequence) &&
+        (oldOverlayWait || state.capacityWaiters.size > 0), "single-frame ACK advances original capacity", 2_000);
+    }
+    assert.equal(oldOverlayWaitSettled, false);
+    assert.ok(state.capacityWaiters.has(oldOverlayResolver));
+    assert.ok(oldOverlayWait.caller.includes("sendPendingRuntimeOverlays"));
+    assert.ok(oldOverlayWait.estimatedFrameBytes <= 64 * 1024);
+    assert.ok(oldOverlayWait.outstandingBytes + oldOverlayWait.queuedBytes +
+      oldOverlayWait.estimatedFrameBytes > 2 * 1024 * 1024);
+    assert.equal(oldOverlayWait.authority, oldAuthority);
+    stages.push({ stage: "old-awaiting-own-capacity-before-replacement", runtimeId, oldAuthority,
+      oldOverlayId: oldOverlayWait.overlayId, oldWaitUnsettled: !oldOverlayWaitSettled });
+  }
 
   const replacementId = await bridge.sessionManager.replaceCodexSession(
     runtimeId, projectPath, [], undefined, { threadId }, 8_000,
@@ -212,11 +288,29 @@ try {
   assert.equal(replacementId, runtimeId);
   assert.notEqual(newRuntime, oldRuntime);
   assert.notEqual(newAuthority, oldAuthority);
+  if (capacityGate === "overlay") {
+    assert.equal(oldOverlayWaitSettled, false);
+    assert.ok(state.capacityWaiters.has(oldOverlayResolver));
+  }
   assert.ok(pending(oldItemId), "Old event must still be pending before ACK releases the gate");
   rpcFixture.notify("turn/started", { threadId, turn: { id: turnId, status: "inProgress" } });
   await waitFor(() => newRuntime.activeTurnId === turnId, "replacement actual Provider turn/started");
   emitItem(newItemId, "New process commentary awaiting the same capacity gate");
   await waitFor(() => pending(newItemId), "actual new process overlay pending");
+  if (capacityGate === "overlay") {
+    assert.equal(oldOverlayWaitSettled, false);
+    assert.ok(state.capacityWaiters.has(oldOverlayResolver));
+    const projected = handler.statusProjection.get(pending(oldItemId).key);
+    assert.equal(projected.authorityGeneration, newAuthority);
+    assert.equal(state.pendingStatusState, oldOverlayWait.pendingStatusState);
+    capacityTrace.push({
+      stage: "replacement-with-original-overlay-wait-unsettled", runtimeId,
+      oldAuthority, newAuthority, currentProjectedStatus: projected,
+      pendingStatusState: state.pendingStatusState,
+      originalWaiterStillPresent: state.capacityWaiters.has(oldOverlayResolver),
+      originalWaitStillUnsettled: !oldOverlayWaitSettled,
+    });
+  }
   assert.equal(pending(newItemId).payload.runtimeSessionId, runtimeId);
   assert.equal(pending(newItemId).payload.authorityGeneration, newAuthority);
   assert.ok(state.capacityWaiters.size > 0);
@@ -230,6 +324,13 @@ try {
   acknowledge(lastSent.sequence);
   await waitFor(() => frames.some((f) => f.event === "runtime_overlay" &&
     f.message.message.id === newItemId), "new authority overlay on original wire after ACK");
+  if (capacityGate === "overlay") {
+    assert.equal(oldOverlayWaitSettled, true);
+    const returned = capacityTrace.find((row) => row.stage === "original-overlay-capacity-returned");
+    assert.equal(returned.accepted, true);
+    assert.equal(returned.runtimeStates[0].bridgeSessionId, runtimeId);
+    assert.equal(returned.runtimeStates[0].authorityGeneration, newAuthority);
+  }
   stages.push({ stage: "replacement-overlay-wire", runtimeId, oldAuthority, newAuthority,
     pendingRuntimeOverlayCount: state.pendingRuntimeOverlays.size,
     pendingRuntimeOverlayBytes: state.pendingRuntimeOverlayBytes });
@@ -256,13 +357,15 @@ try {
     statusSequence: matchingStatus.sequence, overlaySequence: overlays[0].sequence,
     outstandingBytes: state.outstandingBytes, queuedBytes: state.queuedBytes,
     pendingRuntimeOverlayBytes: state.pendingRuntimeOverlayBytes, capacityWaiters: state.capacityWaiters.size });
-  summary = { runtimeId, oldAuthority, newAuthority, oldItemId, newItemId,
+  summary = { runtimeId, oldAuthority, newAuthority, oldItemId, newItemId, capacityGate,
     statusSequence: matchingStatus.sequence, overlaySequence: overlays[0].sequence,
-    traceRoot, originalAckDrainVerified: true, oldOverlayRetired: true, newOverlaySentOnce: true };
+    traceRoot, originalAckDrainVerified: true, oldOverlayRetired: true, newOverlaySentOnce: true,
+    oldOverlayOwnWaitEntered: Boolean(oldOverlayWait), oldOverlayOwnWaitReturnedAfterReplacement: oldOverlayWaitSettled };
 } finally {
   rpcFixture?.beginShutdown();
   client?.terminate();
   await bridge?.close();
+  await Promise.allSettled(capacityObservers);
   historyRpc?.stop();
   await rpcFixture?.close();
   if (httpServer?.listening) await new Promise((accept) => httpServer.close(accept));
@@ -270,8 +373,9 @@ try {
     ["authority-replacement.jsonl", stages], ["bridge-frame.jsonl", frames],
     ["app-server-wire.jsonl", rpcTrace], ["provider-read.jsonl", providerReads],
     ["runtime-overlay-origin.jsonl", origins],
+    ["client-frame.jsonl", clientFrames], ["authority-capacity-wait.jsonl", capacityTrace],
   ]) {
     await writeFile(join(traceRoot, name), rows.map((row) => JSON.stringify(row)).join("\n") + "\n");
   }
 }
-console.log(`C1G_ACCEPTANCE ${JSON.stringify(summary)}`);
+console.log(`${capacityGate === "overlay" ? "C1I" : "C1G"}_ACCEPTANCE ${JSON.stringify(summary)}`);
