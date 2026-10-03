@@ -1901,3 +1901,13 @@ Bridge整个tree变化，本次完整测试是真实重跑。Mobile lib/test及�
 R52的Bridge组合接受；R47实际Mobile旧A已接收/未观察B、replacement后B尚无新通知及overlay专用await-after仍待C1h。
 R45/R49/历史R29及095cab00直接因果继续未接受。真实Provider/设备/生产/云CI/OTA/签名安装/发布NOT_RUN，原生UI工具BLOCKED。
 本批只在隔离分支本地提交，README/PLAN/CHAIN-MAP/矩阵/RUNBOOK及authority入口同步断点。
+
+## E078 — C1h真实Mobile同ID替换的两个消费窗口
+
+父文档断点7955b36d clean。新增独立receiver test/harness，保留C1f测试/共享helper和原七黑盒；产品/依赖未改。
+actual A经原RPC/Bridge/wire/Service/SQL进入无visible owner的quarantine，随后原replaceCodexSession提交同public ID的新process/UUID B。
+合同分别检查B刚替换但无新turn/item通知，以及B实际产生新item但原页面仍未观察authority的窗口。
+只延迟原Updater挂载；不改wire顺序、不写SQL/status/authority/墙钟，不将Bridge生产queue与Mobile消费queue合并。
+等待实际handle+system/init、overlay delivery与真实SQL/status提交屏障；所有异步等待有限且joined，关闭本测试拥有的资源。
+先冻结测试-only输入运行，若产品行为失败保留原red和trace再判定，不从未知时间关系编造根因或提前改策略。
+C1g的catalog组合、完整Bridge2547/1与首次监听timeoutR53仍按原精确输入保存；本合同未运行前NOT_RUN。
