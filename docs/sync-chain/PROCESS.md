@@ -1686,3 +1686,28 @@ C1e 接手文档 checkpoint 为 `63bae0001ca0304acdd801da50eb6d18d83e4ef1`，产
 
 Bridge producer/sequenced/superseded及实际authority生成另由原GPT-6 Luna/max reviewer只读取证；
 Root拥有测试与最终判断。测试及策略接受此时NOT_RUN，不能把新计划计入3396项完整门禁。
+
+## E067 — 新顺序用例通过与错误删除敏感性成立，组合暴露 fixture 启动竞态
+
+新测试 checkpoint `32a8978d3b7b402d767c8a0076cdbf0a6a9752ca` clean：
+`c1f-authority-page-order-first` 1 PASS，0 / 3.639秒；目标analyze无诊断，0 / 13.583秒。
+三段实际轨迹依次为SQL已提交但page authorityObserved=false/pending=1、原Updater接纳后pending=0、
+同一Updater的canonical接替后单条assistant且runtimeOverlayCount=0。
+
+临时错误策略“event authority不同于page已观察值便直接拒绝”只改原admission接点两行，
+`c1f-authority-premature-reject-mutant`按预期FAIL，1 / 2.888秒：pending预期1、实际0。
+这是假设错误策略的敏感性FAIL，不是现产品red。备份及finally恢复完整hash一致，
+恢复后Git clean，见c1f-authority-sensitivity-restoration.json；该mutant没有提交/部署。
+
+`c1f-restored-receivers-and-authority-contracts`同clean输入组合为67 PASS / 1 FAIL，1 / 33.111秒。
+失败仅新顺序用例：session_list先公布handle，测试立即emit_segment时fixture activeRuntime尚未初始化。
+原七个接收黑盒、十三项queue、26项权限与21项terminal都通过。原日志、RPC与Provider system/init帧保留，
+不把先前单用例PASS覆盖在组合FAIL上，也不将该输入写成接受。
+
+仅修fixture启动屏障：在start发送前同时订阅原session_list与Bridge system/init事件，
+等待两者并断言init的真实runtime ID与handle一致；原10秒deadline、业务输入、pending/权限/单条呈现断言保留。
+同时为control失败与receiver失败保留真实诊断，测试之外产品/Bridge/依赖均不变。修正输入尚待重新验证。
+
+独立producer梳理发现同public runtime ID的process replacement可轮换opaque authority，
+因此不能仅凭本地binding是否变化判断R47。此事实与最小组合gate将写入QUEUE-AUTHORITY-ENTRY；
+首个新黑盒仍只证明未观察authority的合法等待，不证明replacement/capacity组合或其全部策略。

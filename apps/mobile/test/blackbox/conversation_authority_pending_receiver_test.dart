@@ -79,7 +79,8 @@ void main() {
               }),
             );
             await process.stdin.flush();
-            expect((await response)['ok'], isTrue);
+            final result = await response;
+            expect(result['ok'], isTrue, reason: '$result');
           }
 
           final temporary = await Directory.systemTemp.createTemp(
@@ -188,6 +189,20 @@ void main() {
                 .expand((rows) => rows)
                 .firstWhere((row) => row.claudeSessionId == threadId)
                 .timeout(const Duration(seconds: 10));
+            final initializedFuture = bridge.messages
+                .firstWhere(
+                  (message) =>
+                      message is SystemMessage &&
+                      message.subtype == 'init' &&
+                      message.provider == 'codex',
+                )
+                .timeout(const Duration(seconds: 10));
+            // A published handle can precede Provider initialization. Wait for
+            // the real completion event, with both futures already observed.
+            final startup = Future.wait<Object>([
+              runtimeFuture,
+              initializedFuture,
+            ]);
             bridge.send(
               ClientMessage.start(
                 ready['projectPath']! as String,
@@ -196,7 +211,10 @@ void main() {
                 provider: 'codex',
               ),
             );
-            final runtime = await runtimeFuture;
+            final started = await startup;
+            final runtime = started[0] as SessionInfo;
+            final initialized = started[1] as SystemMessage;
+            expect(initialized.sessionId, runtime.id);
             // The gate is only the absence of the page status observer. All
             // producer, wire, Service and SQLite paths continue normally.
             chat = ChatSessionCubit(
@@ -302,6 +320,13 @@ void main() {
               'assistantIds': assistantIds(),
               'runtimeProjection': chat.diagnosticRuntimeProjection,
             });
+          } catch (error) {
+            trace.add({
+              'stage': 'receiver-failure',
+              'error': error.toString(),
+              'runtimeProjection': chat?.diagnosticRuntimeProjection,
+            });
+            rethrow;
           } finally {
             await tester.pumpWidget(const SizedBox.shrink());
             if (chat?.isClosed == false) await chat!.close();
