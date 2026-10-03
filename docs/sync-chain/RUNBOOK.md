@@ -239,7 +239,8 @@ C1c/C1d 的身份 red ac4d72fc → 修复 1ee38207，future-turn red 4b59aee7 �
 authority 清理反向测试仅覆盖已有 visible owner，queue-only waiting 仍按 R47 单独取证。
 C1e已按26项public输入窄修已知remote runtime矛盾；产品16196f05与测试import8178295d分开审阅。
 回退产品保留旧B拒绝、合法C owner/image lease、unbound只读与旧组合/durable target断言；不把red checkpoint运行。
-无字段旧组合完整归属仍R49。C1f的R50正向等待已取证，但同ID替换/capacity组合仍按QUEUE-AUTHORITY-ENTRY单独证明R47。
+无字段旧组合完整归属仍R49。C1f的R50正向等待与C1g的Bridge同ID/catalog capacity/ACK组合R52分别取证；
+Mobile已收到旧A/未观察新B及完整R47仍按QUEUE-AUTHORITY-ENTRY单独证明。
 C1f变更限新conversation_authority_pending_receiver_test.dart与文档，原共享helper/七黑盒不依赖它，产品无需回退。
 测试改动由32a8978d、8f671f4f、0cc0c0a9、3eef3b15、84493fc6及各red checkpoint分段记录，先审阅E066–E073。
 回退测试设施不能删除已定位的失败合同或更改业务期限以取得PASS；可在隔离checkout适配owned清理与因果屏障。
@@ -251,3 +252,37 @@ visual pending 的 256/257 策略未审定，不因 quarantine 完成就一起�
 
 真实 Provider、模拟器、真机、生产 Bridge、OTA 和安装/发布状态单独记在矩阵中。
 本轮检查不会自动授权部署、merge、push 或发布。
+
+## C1g的同输入Bridge复跑、证据与回退
+
+固定输入911a4f60新增conversation-authority-replacement-harness.mjs与conversation-authority-replacement.test.ts。
+既有tsx在本测试自建child加载实际TS源码，无须替换dist。Provider仍是隔离stdio JSON-RPC fixture，
+10,000条synthetic catalog只构建原capacity，不改原64KiB frame、1MiB outstanding及2MiB sync预算。
+内部map/budget只读诊断；真实replaceCodexSession/public ACK负责修改，不调用私有send/drop或靠close恢复。
+
+在packages/bridge目录，使用前文CCPOCKET_NODE_BIN对应的Node22路径（本机可显式赋给CCPOCKET_NODE）：
+
+```bash
+export CCPOCKET_NODE="/Users/developer/.local/share/mise/installs/node/22.23.1/bin/node"
+"$CCPOCKET_NODE" node_modules/vitest/vitest.mjs run src/local-features/conversation-authority-replacement.test.ts
+"$CCPOCKET_NODE" node_modules/vitest/vitest.mjs run
+```
+
+根目录的静态检查：
+
+```bash
+"$CCPOCKET_NODE" node_modules/typescript/bin/tsc --noEmit -p packages/bridge/tsconfig.json
+"$CCPOCKET_NODE" --check packages/bridge/scripts/conversation-authority-replacement-harness.mjs
+```
+
+最终原input的完整重放2547 PASS / 1 SKIPPED（18.505秒）、noEmit（5.530秒）、语法（0.127秒）及只读review通过。
+第一次完整2546/1/1FAIL是原catalog watcher的5秒timeout（R53）；目标9项（1.538秒）和完整重放绿不能解释该旧FAIL。
+错误保留旧A策略实验FAIL（1.274秒，pending应0实际1）；finally恢复原source SHA256且clean后才运行最终完整门禁。
+public ACK格式错误的首fixture FAIL亦保留；不能把它记作产品authority缺陷。
+精确输入/dirty diff、receipt/log hash、五份raw trace和293个既有Bridge文件blob证明见supplementalC1g。
+
+Mobile source/test/依赖对象与84493fc6相同，继承71项；完整3396/4仍归16196f05，没有新Mobile全量。
+Bridge整个tree因新增文件改变，因此本次全Bridge实际重跑；原生产文件/依赖相同，build只继承对应原build。
+回退仅新测试/harness与相关文档：19b2939f初始合同、1d430fe2合法ACK、911a4f60关闭前直接pending断言分别有checkpoint。
+不删除已经定位的敏感性合同、不用放宽期限掩盖FAIL；现有生产路径没有本批产品改动可回退。
+C1h接Mobile/SQL/原页面同ID替换，B刚替换尚无新notification与B真正新item分别取证；仍不是部署/发布授权。

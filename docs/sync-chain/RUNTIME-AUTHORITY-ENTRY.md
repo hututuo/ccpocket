@@ -32,7 +32,8 @@ red时产品未改，失败日志及red checkpoint保留。E063在原接点窄�
 本批先保护有明确 runtime 身份的已知矛盾；身份本身仍不是 authority。
 C1f另核对实际SessionManager可复用同public runtime ID替换CodexProcess并轮换authority。
 因此C1e的known-ID矛盾guard不能作为全部replacement证明；新R50仅验证状态尚未被页面观察时的合法等待。
-同ID replacement/capacity组合及无ID远端归属仍分别R47/R49，下一证据见QUEUE-AUTHORITY-ENTRY / E073。
+C1g仅在Bridge补实际同ID replacement与catalog capacity/public ACK组合（R52 / E077）；known-ID guard仍不证明Mobile新旧authority策略。
+Mobile已收到A/尚未观察B、overlay自身await后替换及无ID远端归属仍分别R47/R49，下一C1h见QUEUE-AUTHORITY-ENTRY。
 没有新增字段的旧 V2 状态无法仅凭该字段完成远端归属证明，保留原规则及其证据边界。
 不在这批移植新协议、造第二个权限owner或重写Bridge控制RPC。
 已知不同runtime的status在签名/时间接受前拒绝，避免其驱动合法当前owner的退休。

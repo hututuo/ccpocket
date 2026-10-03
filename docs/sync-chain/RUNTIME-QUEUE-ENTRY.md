@@ -8,7 +8,8 @@ quarantine 已迁到 RuntimeOverlayQuarantine 唯一 owner，visual pending 仍�
 queue-only authority 留存是原有且未审定的策略，不能从当前十三项契约推断所有 authority 替换会清队列。
 C1f新增R50：真实producer status已入SQL但页面尚未观察authority时，原quarantine合法等待、原Updater接纳后单次canonical接替。
 固定84493fc6的71项选定组合/目标静态/独立复核通过（E073）；产品未改，完整3396/4仍在16196f05。
-这关闭的是未观察authority的正向等待，不关闭同public ID替换/capacity组合（R47）。
+这关闭的是未观察authority的正向等待。随后C1g在实际Bridge同public ID replacement与catalog capacity/public ACK组合通过（R52）；
+旧A生产pending在ACK后退休，新B在完整status之后单次wire。Mobile已接收A/未观察B及完整R47仍未验证。
 
 ## 两套队列不能合并
 
@@ -86,7 +87,8 @@ map、bytes、remove、clear已一起迁移，原状态已删除；clear/flush/c
 
 visual pending 暂不迁移；256/257 与 future terminal 策略未证明前不把两种 queue 做通用 coordinator。
 C1e已完成已知runtime身份的原mutation接纳契约（R48），缺字段的完整远端归属仍R49。
-下一批按[authority生产/消费入口](QUEUE-AUTHORITY-ENTRY.md)组合真实same-ID replacement callback与capacity等待（R47）。
+Bridge组合已补R52（E077），固定911a4f60全量重放2547/1、类型/语法及敏感性恢复通过；首次catalog监听timeout另留R53。
+下一批C1h按[authority生产/消费入口](QUEUE-AUTHORITY-ENTRY.md)接真实Mobile/SQL/页面，分清已收到旧A与尚未观察B；R47仍开放。
 每次结构提交保持原消息、容量、deadline 与拒绝行为；新增策略另起行为批。
 同输入的 public 契约、原七黑盒、全 Mobile/analyze/format、固定 SHA 独立复核及回退依赖共同验收。
 Bridge 或 fixture source 未改时用精确 Git tree/lock 对象继承既有门禁，不把继承写成重跑。

@@ -26,7 +26,7 @@
 | R19 | 原页面自动加载两页 older turns | 原页面/updater/Cubit 保持；Provider ID/顺序、最新内容保留、cursor 1→2→null、加载终态 | PASS 真实 Bridge/RPC/SQLite/原页面，mutation 漏通知 FAIL 保留；E014/E020；Provider fixture 范围 |
 | R20 | thread reset 的 preparing / queued / sent | 三阶段旧操作失效；其他 thread/source 不受影响，后续新调用可用 | PASS 三阶段 read-barrier / late-reply / pure lifecycle；准备/排队红灯保留；E013/E016/E017 |
 | R21 | 已开始 older mutation 的提交/读取与同源订阅替换交错 | 本地 epoch/update 仍通知当前分区；原错误保留；旧 transport 不复活；其他 source/dispose 不通知 | PASS 六种 success/error × same-source/other-source/dispose，以及 current-sub post-commit read error；三个基线 FAIL 保留；E016/E019/E020 |
-| R22 | Bridge 全量/build/typecheck 与 fixture 变化 | 无 Bridge 回归，隔离 fixture 可启动/关闭 | PASS da3d3f6 clean 全量2546 PASS / 1 SKIPPED，124 files PASS；Node22 noEmit、E053实际build通过；C1e按相同Bridge/dependency tree继承，非本批重跑。错误package-local TypeScript命令FAIL单独保留，编译器未执行；E059/E064/ACCEPTANCE.json |
+| R22 | Bridge 全量/build/typecheck 与 fixture 变化 | 无 Bridge 回归，隔离 fixture 可启动/关闭 | PASS 固定911a4f60 clean完整重放2547 PASS / 1 SKIPPED，125 files PASS / 1 SKIPPED；Node22 noEmit/新harness语法通过。293个既有Bridge生产/fixture文件及依赖未变，build按E053原输入继承；首次完整2546/1/1FAIL保留R53，重放绿不作因果关闭；旧2546/1及错误编译器路径FAIL保留；E077/ACCEPTANCE.json |
 | R23 | 页面读取中的 commit/dirty/epoch 推进 | 不短暂接受旧窗口/错误；合并必要 follow-up，最终与 SQL 一致 | PASS 十三个真实 SQL 页面契约与八个 lifecycle 保护、最终全量；E023/E025/E026/E029 |
 | R24 | 旧 source/thread、invalidate/dispose 的成功/error/finally | 旧结果/错误不能替换页面或清理新 owner/dirty；dispose 无后续 UI/读取 | PASS 旧 source error 基线 FAIL→fix；线程切换与 dispose 正反路径，最终全量；E023–E026/E029 |
 | R25 | 当前读失败/Retry/后续 commit | last-good 可读；当前错误可重试；后续通知仍更新 | PASS 原 SQL 页面 Retry 交互与后续真实 commit；E023/E029 |
@@ -51,11 +51,13 @@
 | R44 | T2 event先入隔离队列，随后退休T1显示 | 同source/runtime/authority、时间不旧的T2不被T1退休清空；原flush验证后应用 | PASS direct T2与先旧terminal两项public契约、3396项最新全量；两项red保留。同binding/authority范围，不扩张到future authority或真实双turn；E054/E055/E059/E064 |
 | R45 | visual pending 256/257策略 | 对照provisional visual原则审定溢出/重放/completion副作用 | NOT_RUN；只登记原现状，暂不迁移此队列；RUNTIME-QUEUE-ENTRY |
 | R46 | 正确runtime的unknown/unavailable快照保留旧idle | 保留的activity不取得新terminal清理资格；后续authoritative idle仍结束 | PASS 21项terminal+13项queue共34项及最新全量，原20 PASS/1 FAIL red保留；E056/E057/E059 |
-| R47 | queue-only authority replacement / future authority waiting | 分清已失效旧authority与合法未来authority；不能从有visible owner的测试推断一律清理 | NOT_RUN完整策略：实际同public ID replacement能产生新opaque authority已由源码定位；C1f真实producer的未观察authority合法等待另列R50 PASS。replacement callback+capacity待ACK与Mobile旧/新消费组合尚未共同证明，不据R50改策略；QUEUE-AUTHORITY-ENTRY / E073 |
+| R47 | queue-only authority replacement / future authority waiting | 分清已失效旧authority与合法未来authority；不能从有visible owner的测试推断一律清理 | NOT_RUN完整策略：R50合法未观察authority等待PASS，C1g原same-ID replacement callback+catalog capacity/public ACK的Bridge组合另列R52 PASS。Mobile已收到A/尚未观察B、B刚替换无新通知及overlay自身await-after仍待C1h，不据Bridge PASS改消费策略；QUEUE-AUTHORITY-ENTRY / E077 |
 | R48 | 已知runtime身份的旧缓存与原mutation lease | 控制/设置/审批目标必须属于当前已证明owner；旧B既不能授予C权限，也不能替换合法C或取消其image lease；无binding仍只读 | PASS 选定契约：16行为red→green与cold-start两项candidate red→green，26项新契约/相关313项、16196f05全量3396/4及固定review通过；8178295d最终静态复查通过。无ID旧组合归属另列R49；E061–E065 / RUNTIME-AUTHORITY-ENTRY |
 | R49 | 无runtime身份字段的旧V2 / appServer组合 | 维持合法兼容用途，不伪造remote ID，不把原generation/source规则当完整远端归属证明 | NOT_RUN：旧V2合法lease、legacy idle、Desktop detach与durable target保护PASS；缺字段的连续A→B→C远端归属仍未证明，独立策略入口，E063 |
 | R50 | 实际producer authority已提交、页面尚未观察 | 合法事件仍bounded quarantine且无mutation；原Updater接纳一次，canonical在同页单次接替 | PASS 固定84493fc6真实Bridge/RPC/SQL/Service/SessionList/原Updater，status37→overlay38及三段轨迹身份匹配；错误提前拒绝敏感性FAIL、完整hash恢复后4项PASS。不是同IDreplacement或真实Provider验收；E066–E073 |
 | R51 | 新测试owned harness的READY失败清理 | 超时、非法JSON、缺必需字段时取消订阅、只回收captured child并等待exit；不遗留自己的进程 | PASS 3条真实Node keepalive合同，timeout及两条协议red保留，84493fc6的71项组合/目标静态/固定review通过。共享helper/原七黑盒/生产服务未变；E069–E073 |
+| R52 | actual同public ID process replacement × 原catalog capacity/public ACK | 实际新authority、原callback/status先发、旧A退休、新B单次wire，ACK恢复预算且close前清零 | PASS 固定911a4f60实际Bridge/SessionManager/CodexProcess/raw stdio，41页status164–204先于overlay205，旧A无wire；错误保留A敏感性FAIL、原hash恢复后完整2547/1及目标静态/固定review通过。仅Bridge catalog gate，不计Mobile/真实Provider或overlay专用await-after；E074–E077 |
+| R53 | 既有catalog rollout文件监听的全量并发时序 | 原watch输入在既有期限内通知；失败需保留可归因证据 | FAIL 历史保留：911a4f60首次完整2546 PASS / 1 SKIP / 1 FAIL，reports the Codex thread id from a rollout filename超过5000ms；同期限目标9项和完整2547/1重放PASS，直接原因仍未知，不放宽期限或改原文件；E077 |
 
 R09/R10 的最上游是隔离 Provider fixture，使用真实 Bridge、协议、SQLite 和页面相关代码；
 即使 PASS，也只证明接收闭环，不冒充 R13/R14。

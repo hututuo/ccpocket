@@ -180,3 +180,21 @@ repair transaction 接受后仍走原通知出口；图不表示所有事务都�
 
 相同数值可能约束不同对象。先确认对象和权威出口，再判断是否能合并或退役；
 本批没有为减少判断数而放宽身份、coverage 或容量保护。
+
+## C1g：实际process替换、capacity与public ACK的Bridge组合
+
+原SessionManager保持public runtime ID，原CodexProcess实际生成不同opaque authority；
+原runtimeSessionChanged同步刷新status projection，A/B的raw item/completed分别来自两个stdio连接。
+隔离catalog seed填满原capacity，只有public累计ACK释放budget；未直接写pending map、调用私有send/drop或改预算。
+
+| 接点 | 固定911a4f60实际结果 | 未扩张的边界 |
+|---|---|---|
+| 原catalog发送capacity等待 | outstanding1,005,733、queued1,050,738、waiter1，A overlay pending | 并非overlay自身wait的await-after replacement |
+| 原same-ID replacement callback | 实际新process/authority B，A尚pending；B消息同样先等待 | UUID无排序，不用public ID相同推断authority相同 |
+| public ACK释放后 | B status41页sequence164–204，overlay205单次；A overlay没有上wire | 不证明SQL或页面已观察B |
+| 关闭前观测 | B到wire时pending count/bytes0，最终outstanding/queued/waiters0 | 不能用close清理假装ACK恢复 |
+
+临时错误保留A策略在B实际到wire后直接FAIL：pending应0实际1；finally恢复源码hash后全Bridge重放2547/1。
+293个既有Bridge文件及全部Mobile输入未改；整个Bridge tree因新测试/harness变化，不能继承旧全量当本次运行。
+E077 / ACCEPTANCE.json记录本次全量、类型/语法、只读review、五份trace hash与保留的catalog watcher timeout。
+下一Mobile合同需区别已到SQL的A、同public ID的新B事实及页面尚未观察B；不直接从Bridge正确发送推断Cubit策略正确。

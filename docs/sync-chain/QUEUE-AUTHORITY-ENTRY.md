@@ -14,7 +14,8 @@
 | V2 runtimeSessionChanged / publishRuntimeOverlay（1111、1144） | replacement通知同步刷新projection，实际snapshot构造overlay envelope | handler异步runSync等待期间仍可能收到新的runtime变化，须验证组合顺序 |
 
 上述文件均在packages/bridge/src下；V2为local-features/conversation-sync-v2.ts。
-固定Bridge tree `61fda2bdb14f2325a96957186dcc6ac0ade3f4e6`。
+C1f原Bridge tree为 `61fda2bdb14f2325a96957186dcc6ac0ade3f4e6`；C1g只新增测试/harness使整个tree变化，
+293个既有Bridge文件逐项blob不变，生产文件/依赖继承证明见c1g-final-input-identity.json。
 只读producer审计为证据目录中的c1f-bridge-producer-audit.json；它没有执行新测试。
 
 ## status排队与capacity的当前责任
@@ -56,7 +57,7 @@ Cubit _reconcileDetachedRuntimeOverlayForStatus没有已呈现tracking时仍早�
 原flush先对exact authority+turn匹配apply，再仅按已证明stale规则删除；source/runtime/suspend等原reset各自保留。
 因为same-ID replacement不必触发binding change，R50及已有visible-owner反向测试不能关闭完整R47。
 
-## 下一批：同ID替换与capacity的一个组合合同
+## C1g：同ID替换与catalog capacity的实际组合合同
 
 既有component证据分别位于session.test.ts的stable-ID replacement、codex-process.test.ts的stop authority轮换，
 V2 tests的status先于overlay、terminal drop及bounded capacity gate；它们没有共同执行真实replacement callback。
@@ -70,7 +71,21 @@ V2 tests的status先于overlay、terminal drop及bounded capacity gate；它们�
 6. 如果真正产品行为与可判定事实不符，先保存red，再在原owner窄修；结构迁移另提交。
    32/64KiB拒绝新事件、remove-before-apply、13项queue、26项权限、21项terminal、原接收黑盒必须继续成立。
 
-当前该组合及完整R47策略NOT_RUN；此入口不是清理所有不匹配authority的正确性证明。
+步骤1–4已在固定911a4f60由actual CodexProcess、SessionManager、Bridge/V2 handler和raw RPC共同执行（R52）。
+A pending于原catalog capacity处，actual同public ID replacement创建B及新UUID；B status41页164–204先于overlay205，
+仅public ACK恢复，旧A无wire，pending map/bytes与budget/waiters在close前归零。
+新harness由既有tsx直接加载实际TS源码，原fixture/预算/producer/control均未替换；catalog seed仅提供可重复的容量输入。
+错误“不同authority仍保留A”敏感性按预期FAIL（pending0→1）；finally恢复原产品SHA256及clean后完整Bridge重放2547/1。
+目标语法/类型和固定SHA只读review通过，原始FAIL、恢复及trace见E074–E077 / supplementalC1g。
+
+## 下一批C1h：实际Mobile旧A与未观察新B
+
+步骤5–6仍NOT_RUN：先让实际A overlay经过原wire/Service/SQL并处于无visible owner的quarantine，
+再用原replacement入口产生同public ID的B。分别检查B刚替换尚无新notification、B真正产生新item后两个窗口。
+source、binding、producer authority、status observedAt与page接纳各记录实际值，不能为了得到red手造时间/authority。
+有限延迟只控制原Updater观察时机，不重排wire、不改SQL/consumer、不删合法新B。
+若旧A是否失效尚缺消费方可用的事实，先记录未知；若实际事实已能判定且行为错误，保存red再在原owner窄修。
+R47完整策略及overlay专用capacity await-after replacement仍NOT_RUN；此入口不是清理所有不匹配authority的正确性证明。
 READY timeout/非法JSON/缺字段的owned子进程清理已另列R51，scope限新增测试，不触碰生产Bridge。
 
 ## 并列未知

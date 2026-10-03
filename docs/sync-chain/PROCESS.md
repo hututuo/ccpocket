@@ -5,15 +5,16 @@
 - 时间：2026-10-03（Asia/Shanghai；此前条目保留当时记录）。
 - 分支：`codex/sync-chain-extraction-20261001`。
 - 起始 SHA：`930f1267e949c6cf2095761cc71c43cca08c6dc3`。
-- 阶段：A0–A3 / B1、B2、C1a、C1b、C1c/C1d 与 C1e 的选定接缝已完成源码门禁；C1f已补原生产/提交/页面观察的正向等待及owned测试清理，下一入口是R47同ID替换/capacity组合，尚不搬visual pending。
+- 阶段：A0–A3 / B1、B2、C1a–C1e的选定接缝已完成源码门禁；C1f补正向等待/owned测试清理，C1g补实际Bridge same-ID replacement与catalog capacity/public ACK组合（R52）。下一C1h接Mobile旧A/未观察B，完整R47仍开放，尚不搬visual pending。
 - 最新完整门禁产品/测试 SHA：`16196f05bf60943c1ebbc49475353a7b085fa1a4`；C1e 在原status接点拒绝已知不同runtime，不新增权限owner。
 - 仅测试import后续 SHA：`8178295d18f25a1cafc8d73fb039e2f664065ba9`，产品/依赖/黑盒tree不变；26项及完整静态分析另查。
 - C1f仅新增测试/文档，冻结输入 `84493fc65bbabf18cd41b18dbdbf7c298e869346`：71项选定组合PASS（8真实链、3自建process、60public），新文件analyze无诊断/format不变，固定SHA独立review无新增P0–P2。未重跑完整Mobile/Bridge。
-- 最新全量 Mobile 3396 PASS / 4 SKIPPED（--concurrency=1），Bridge 2546 PASS / 1 SKIPPED按相同tree继承E059；build/typecheck/格式通过，继承与重跑分别登记。
+- 最新全量Mobile3396 PASS / 4 SKIPPED（--concurrency=1）仍属16196f05；C1g冻结911a4f60完整Bridge重放2547 PASS / 1 SKIPPED，noEmit/语法通过。首次完整2546/1/1FAIL保留R53，目标9项及完整重放绿不作因果关闭。
+- C1g只新增Bridge test/harness，原293个Bridge文件及Mobile/依赖输入未变；原build按生产文件/依赖相同继承，Mobile71项也按相同84493fc6输入继承，没有新Mobile全量。
 - 最终 analyze 0 error/warning，1017 既有 info 完整文本逐项无新增；固定产品 SHA 独立复核无本次新增 P0–P2。
 - R35 pending focus 缺陷已确定性旧 Service red → 窄修 → 相同原页面 green，关闭选定交错；旧两次 FAIL 与恢复收据保留。
 - C1c `095cab00` clean 全量 3344 PASS / 4 SKIPPED / 1 FAIL，不是可验收候选；新 R40 两项 red 和诊断见 E049。
-- 已接受完整门禁见E064/E065，C1f选定补充见E073及ACCEPTANCE.json；C1e red→green与回退见E061–E065，C1f的fixture red与敏感性恢复见E066–E073。
+- 已接受完整Mobile门禁E064/E065、C1f补充E073、C1g原组合E077见ACCEPTANCE.json；C1e red→green回退见E061–E065，C1f设施red与恢复E066–E073，C1g非法ACK/敏感性FAIL及catalog timeout E074–E077全部保留。
 - R48已知runtime身份的控制接纳选定契约闭合；R47 queue-only策略及R49无字段旧组合的完整远端归属仍未验收，不据此宣称控制全链正确。
 - E024 的历史并发折叠等待 FAIL 尚未归属；当前同四文件默认并发 50 PASS，不能据此关闭旧失败或宣称设备/运行链验收。
 - 真实 Provider、模拟器/真机、生产 Bridge、云 CI、OTA/发布 NOT_RUN；原生 UI 自动化工具缺失为 BLOCKED。
@@ -1867,3 +1868,36 @@ Root进一步在B overlay实际到达之后、最后ACK drain之前记录pending
 正确断言、原budgets、RPC/wire/control路径及期限没有放宽，产品与既有fixture均未改。
 下一冻结输入做错误策略敏感性、finally源码hash恢复，再跑完整Bridge与目标语法/类型及窄复核。
 Mobile原输入与71项保护按同一原source/fixture对象继承，不伪造新全量Mobile。
+
+## E077 — C1g固定输入接受、故障检出与既有监听超时保留
+
+最终测试/harness输入 `911a4f60084a9ad80be43fa25c13124d01a83b8d` clean。
+先做仅隔离实验的错误策略“不同actual authority仍保留A”，
+`c1g-retired-authority-retained-mutant`按预期FAIL，1 / 1.274秒；B实际wire后pending应0、实际1，直接检出而非timeout。
+实验tracked diff SHA256 `0e077f2489b9057896ee67f5548f941093e12c7b9b27e1e2d57bddf9cc8108b4`；
+finally恢复原conversation-sync-v2.ts SHA256 `728ab4d5b005aee220848cb274ba2634ff7917a5a32d335bb8ee36d942e6c659`且Git clean。
+恢复证明c1g-authority-sensitivity-restoration.json；未提交/部署该错误策略，dist未改。
+
+恢复后的`c1g-final-asserted-full-bridge`第一次完整2546 PASS / 1 SKIPPED / 1 FAIL，1 / 19.052秒；
+新C1g合同PASS，唯一FAIL是原session-catalog-monitor.test.ts:84的rollout filename监听超过Vitest5000ms。
+`c1g-catalog-timeout-original-deadline-replay`同期限原文件9 PASS，0 / 1.538秒；
+随后`c1g-final-asserted-full-bridge-replay`相同clean SHA完整2547 PASS / 1 SKIPPED，125 files PASS / 1 SKIPPED，0 / 18.505秒。
+完整重放未并发tsc，但这只是运行差异，不是timeout原因证明；第一次FAIL保留R53及原日志，不修改原monitor/test或放宽期限。
+只读调查确认真实fs.watch、整用例与内层wait均5秒，缺少callback轨迹不能定位卡点；原test失败出口未finally close是设施缺口，
+目录清理后watcher的实际寿命未知。C1g独立child/HOME/trace且使用fake catalog monitor，没有可证共享目录影响；资源负载因果仍未知。
+调查见c1g-catalog-timeout-source-review.json；本批不把假说记作根因。
+`c1g-final-asserted-bridge-typecheck`0 / 5.530秒；`c1g-final-asserted-harness-syntax`0 / 0.127秒。
+
+实际审计c1g-final-producer-replacement-audit.json：原capacity waiter1，outstanding1,005,733、queued1,050,738 bytes；
+actual同public runtime ID process替换出不同opaque UUID，old A在ACK前仍pending，raw item/completed来自不同stdio连接。
+B完整status41页sequence164–204先于overlay205，B单次wire、A无wire；B到wire时pending count/bytes0，
+public ACK drain后outstanding/queued/bytes/waiters0且尚未close。五份trace文件hash和原消息身份匹配。
+固定911a4f60窄delta及1d430fe2完整harness的GPT-6 Luna/max只读复审无本次新增可证明P0–P2，未运行独立测试。
+gate是catalog发送capacity，不能将本合同扩张为overlay自身await-after replacement。
+
+c1g-final-input-identity.json核对293个既有Bridge文件blob全部不变，只新增两个test/harness文件；
+Bridge整个tree变化，本次完整测试是真实重跑。Mobile lib/test及依赖对象与84493fc6相同，继承C1f71项；
+完整Mobile3396/4仍在16196f05，原build按生产文件/依赖相同继承。所有候选PASS/FAIL、scope、时间/hash见supplementalC1g。
+R52的Bridge组合接受；R47实际Mobile旧A已接收/未观察B、replacement后B尚无新通知及overlay专用await-after仍待C1h。
+R45/R49/历史R29及095cab00直接因果继续未接受。真实Provider/设备/生产/云CI/OTA/签名安装/发布NOT_RUN，原生UI工具BLOCKED。
+本批只在隔离分支本地提交，README/PLAN/CHAIN-MAP/矩阵/RUNBOOK及authority入口同步断点。

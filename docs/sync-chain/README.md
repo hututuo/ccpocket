@@ -65,8 +65,14 @@ C1e随后证明并修复旧B状态与当前C runtime混用权限：16项实际�
 原Updater接纳后只出现一次，再由canonical在同一页面接替。错误提前删除策略会让该用例FAIL，恢复后4项PASS。
 READY超时及非法/缺字段协议导致的自建进程清理缺口均有red→green，原七黑盒及共享helper保持不变。
 完整3396/4仍归属16196f05，未把新增测试计作新全量。证据与失败保留见E066–E073 / ACCEPTANCE.json。
-下一批按[authority生产/消费入口](QUEUE-AUTHORITY-ENTRY.md)证明同public runtime ID替换与capacity等待组合（R47）；
-无runtime身份字段的旧组合远端归属及visual pending 256/257策略仍未验收。
+C1g随后仅新增Bridge组合测试/harness，原293个Bridge文件及全部Mobile/依赖输入保持不变。
+冻结 `911a4f60`，相同public runtime ID经真实SessionManager替换成新process/opaque authority；
+原catalog capacity等待只由public ACK释放，旧A事件退休，B的41页status全部发送后单次overlay，关闭前预算/等待者归零（R52）。
+错误保留旧A的敏感性实验按预期FAIL（应0实际1），finally逐字节恢复源码后完整Bridge重放 **2547 PASS / 1 SKIPPED**，
+typecheck/语法及固定SHA只读review通过。首次全量的既有catalog监听5秒超时仍独立保留（R53）：
+目标9项及完整重放PASS不能关闭其未知因果。精确收据和5份trace hash见E074–E077 / supplementalC1g。
+下一批[authority生产/消费入口](QUEUE-AUTHORITY-ENTRY.md)接真实Mobile/SQL/原页面，证明已接收旧A与未观察新B（C1h）；
+R47完整策略、overlay自身await后的replacement、无runtime字段归属及visual pending 256/257仍未验收。
 
 接手顺序：
 
