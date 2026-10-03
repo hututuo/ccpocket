@@ -1667,3 +1667,22 @@ Bridge status身份是C1c/C1e的必要事实，若移除字段须同时重新评
 没有改R47策略，也没有把两侧不同queue的预算/authority规则统一。
 无ID远端归属、visual256/257、历史R29/095cab00归因、真实Provider/设备/生产/CI/发布继续分别留未验收。
 README、PLAN、CHAIN-MAP、矩阵、RUNBOOK与各入口同步到本断点；原checkout与用户数据保持原状。
+
+## E066 — R47 生产与消费顺序取证，先保护未观察 authority 的合法等待
+
+C1e 接手文档 checkpoint 为 `63bae0001ca0304acdd801da50eb6d18d83e4ef1`，产品仍为 `16196f05`。
+本批不改产品/Bridge/协议/依赖，也不提前定 queue-only authority replacement 策略。
+
+已核对消费顺序：Service 的 `_v2MutationTail` 串行接受事件；完整status batch先完成SQLite事务，
+再发布syncUpdates。SessionList应用status delta后经独立catalogSnapshotChanges通知原Updater，
+所以wire sent、SQL committed与page applied是不同边界。Cubit只有已呈现tracking才执行authority reconcile；
+仅pending时仍等待精确authority+turn或明确失效事实。runtime/source/suspend原重置接点各自保留。
+
+首个新增黑盒计划：复用现有stdio JSON-RPC Provider fixture与真实Bridge/SessionManager；
+先建立真实runtime handle，延迟挂载状态Updater，待实际producer的overlay已由原Service接受。
+检查SQL已含相同runtime/authority/turn，而Cubit尚未观察authority时事件仅隔离、无mutation权限。
+随后挂载原Updater，合法事件只出现一次，再由原canonical快照接替；记录实际sequence与时间。
+没有手工构造authority、重排wire、替换接收器或改七个原黑盒。通过后再做窄的错误删除敏感性验证。
+
+Bridge producer/sequenced/superseded及实际authority生成另由原GPT-6 Luna/max reviewer只读取证；
+Root拥有测试与最终判断。测试及策略接受此时NOT_RUN，不能把新计划计入3396项完整门禁。
