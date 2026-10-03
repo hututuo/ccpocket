@@ -1,4 +1,6 @@
+import 'dart:async';
 import 'dart:convert';
+import 'dart:typed_data';
 
 import 'package:ccpocket/features/chat_session/state/chat_session_cubit.dart';
 import 'package:ccpocket/features/chat_session/state/chat_session_state.dart';
@@ -59,7 +61,10 @@ void main() {
     bridge.dispose();
   });
 
-  ChatSessionCubit create({String runtime = _runtimeC}) {
+  ChatSessionCubit create({
+    String runtime = _runtimeC,
+    ChatImagePayloadEncoder? imagePayloadEncoder,
+  }) {
     final cubit = ChatSessionCubit(
       sessionId: _thread,
       provider: Provider.codex,
@@ -67,6 +72,7 @@ void main() {
       streamingCubit: streaming,
       detachedPreview: true,
       initialLiveRuntimeSessionId: runtime,
+      imagePayloadEncoder: imagePayloadEncoder,
     );
     addTearDown(cubit.close);
     return cubit;
@@ -206,6 +212,55 @@ void main() {
         expect(bridge.interruptedSessionIds, isEmpty);
         expect(bridge.stoppedSessionIds, isEmpty);
         expect(cubit.canMutateAttachedRuntime, isFalse);
+      });
+
+      test('late B cannot replace the already proven C settings owner', () {
+        final cubit = create();
+        apply(cubit, _status(observedAt: '2026-10-03T00:00:01.000Z'));
+        apply(
+          cubit,
+          _status(runtime: _runtimeB, authority: 'authority-unobserved-b'),
+        );
+        cubit.setCodexModel(
+          'gpt-5.4-mini',
+          reasoningEffort: ReasoningEffort.low,
+        );
+
+        final settings = sentPayloads().single;
+        expect(settings['runtimeSessionId'], _runtimeC);
+        expect(settings['authorityGeneration'], _authorityC);
+        expect(cubit.canMutateAttachedRuntime, isTrue);
+      });
+
+      test('late B cannot cancel a valid C image dispatch lease', () async {
+        final encoded = Completer<List<Map<String, String>>>();
+        final cubit = create(imagePayloadEncoder: (_) => encoded.future);
+        apply(cubit, _status(observedAt: '2026-10-03T00:00:01.000Z'));
+        expect(
+          cubit.sendMessage(
+            'Image for the current owner',
+            images: [
+              (bytes: Uint8List.fromList([1, 2, 3]), mimeType: 'image/png'),
+            ],
+          ),
+          isTrue,
+        );
+        await Future<void>.microtask(() {});
+        expect(sentPayloads(), isEmpty);
+        apply(
+          cubit,
+          _status(runtime: _runtimeB, authority: 'authority-unobserved-b'),
+        );
+        encoded.complete(const [
+          {'base64': 'AQID', 'mimeType': 'image/png'},
+        ]);
+        await pumpEventQueue();
+
+        expect(sentPayloads(), hasLength(1));
+        final input = sentPayloads().single;
+        expect(input['type'], 'input');
+        expect(input['sessionId'], _runtimeC);
+        expect(cubit.canMutateAttachedRuntime, isTrue);
       });
 
       test(

@@ -10,8 +10,9 @@ session_list handle 与 V2 authority 是两个事实，只有形成当前精确�
 静态路径显示：status 签名带 runtimeSessionId，但接纳 authority 时只标成本地当前 binding generation。
 A→B→C 期间 B 未被 Cubit 观察时，单个 rejected authority 槽只记 A；
 迟到的同源 B writable status 可能把 authority B 与当前 runtime C 拼成可写 target。
-E061 已由两种 capability 下的公开输入证明：12 项行为 FAIL / 8 项保护 PASS，
+E061/E062 已由两种 capability 下的公开输入证明：16 项行为 FAIL / 8 项保护 PASS，
 input/approval 实际目标为 C，stop/interrupt 实际调用 C，settings 混合 C runtime 与 B authority。
+已有合法C的settings owner会被B替换，合法C image dispatch lease也会被B取消。
 原产品未改，失败日志及 red checkpoint 保留；修复后必须使用同一输入转 green。
 
 ## 唯一 owning path 与范围

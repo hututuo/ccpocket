@@ -1548,3 +1548,23 @@ Desktop无Bridge ID的detach，以及durable settings独立target。
 下一修复只在原status权限接纳接点拒绝已知runtime身份矛盾，复用原撤权路径与后续getter/dispatch。
 不建立另一份runtime身份缓存，不把可选ID当authority，保留无字段旧组合的原规则与有限证明能力。
 这批先提交red checkpoint；它不是可运行候选。green、完整门禁与固定输入复核另记。
+
+## E062 — 旧状态也不能替换已经确认的当前 owner
+
+E061 red checkpoint `4d7cae87749b305fbeba719f0406a9578bcb2cfe`，产品仍未改变。
+在两种 capability 下各补两个方向：C 已取得正确authority后迟到B，
+settings必须仍使用authority C；合法C image dispatch等待encoder时迟到B，不能取消已捕获的C lease。
+原代码分别混为authority B与取消合法input。这排除了“只撤权，不保留合法C”的不完整修复。
+
+`c1e-runtime-authority-preserve-owner-red`：8 PASS / 16行为FAIL，1 / 2.318秒，
+diff SHA256 `71e96d784d21f926e6267e919abc1c7af6e5d35bb169771d3289ac8f5b0c920b`。
+image断言先取single，在缺失输出时抛No element；为使证据明确，先加期望一个输出的数量断言，
+不改产品/输入/正确结果；`c1e-runtime-authority-owner-red-explicit`仍8 PASS / 16行为FAIL，
+1 / 1.717秒，diff SHA256 `779012994993096177e7d90d0330a2928a99c26ac7a801d4411093a619d568cf`。
+两次日志均保留，后者直接呈现expected 1 / actual 0。
+
+因此选定修复为原status接点的早期attachment fence：provider/thread核对后，
+在observedAt/signature/authority/turn/queue/visual的任何接受前拒绝明确不同的runtime ID。
+这样旧B不会授予C权限，也不会用其时间/authority替换已证明C owner或驱动C队列退休。
+无ID的旧V2/Desktop和legacy规则保留；匹配ID仍须经过所有原authority/source/turn/control门禁。
+不增加另一个权限状态或runtime身份缓存，行为修复与本批red checkpoint分开提交。
