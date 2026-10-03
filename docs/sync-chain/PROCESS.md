@@ -3,22 +3,20 @@
 ## 当前断点
 
 - 时间：2026-10-03（Asia/Shanghai；此前条目保留当时记录）。
-- 分支：`codex/sync-chain-extraction-20261001`。
-- 起始 SHA：`930f1267e949c6cf2095761cc71c43cca08c6dc3`。
-- 阶段：A0–A3 / B1、B2、C1a–C1e的选定接缝已完成源码门禁；C1f补正向等待/owned测试清理，C1g补实际Bridge same-ID replacement与catalog capacity/public ACK组合（R52）。下一C1h接Mobile旧A/未观察B，完整R47仍开放，尚不搬visual pending。
-- 最新完整门禁产品/测试 SHA：`16196f05bf60943c1ebbc49475353a7b085fa1a4`；C1e 在原status接点拒绝已知不同runtime，不新增权限owner。
-- 仅测试import后续 SHA：`8178295d18f25a1cafc8d73fb039e2f664065ba9`，产品/依赖/黑盒tree不变；26项及完整静态分析另查。
-- C1f仅新增测试/文档，冻结输入 `84493fc65bbabf18cd41b18dbdbf7c298e869346`：71项选定组合PASS（8真实链、3自建process、60public），新文件analyze无诊断/format不变，固定SHA独立review无新增P0–P2。未重跑完整Mobile/Bridge。
-- 最新全量Mobile3396 PASS / 4 SKIPPED（--concurrency=1）仍属16196f05；C1g冻结911a4f60完整Bridge重放2547 PASS / 1 SKIPPED，noEmit/语法通过。首次完整2546/1/1FAIL保留R53，目标9项及完整重放绿不作因果关闭。
-- C1g只新增Bridge test/harness，原293个Bridge文件及Mobile/依赖输入未变；原build按生产文件/依赖相同继承，Mobile71项也按相同84493fc6输入继承，没有新Mobile全量。
-- 最终 analyze 0 error/warning，1017 既有 info 完整文本逐项无新增；固定产品 SHA 独立复核无本次新增 P0–P2。
-- R35 pending focus 缺陷已确定性旧 Service red → 窄修 → 相同原页面 green，关闭选定交错；旧两次 FAIL 与恢复收据保留。
-- C1c `095cab00` clean 全量 3344 PASS / 4 SKIPPED / 1 FAIL，不是可验收候选；新 R40 两项 red 和诊断见 E049。
-- 已接受完整Mobile门禁E064/E065、C1f补充E073、C1g原组合E077见ACCEPTANCE.json；C1e red→green回退见E061–E065，C1f设施red与恢复E066–E073，C1g非法ACK/敏感性FAIL及catalog timeout E074–E077全部保留。
-- R48已知runtime身份的控制接纳选定契约闭合；R47 queue-only策略及R49无字段旧组合的完整远端归属仍未验收，不据此宣称控制全链正确。
-- E024 的历史并发折叠等待 FAIL 尚未归属；当前同四文件默认并发 50 PASS，不能据此关闭旧失败或宣称设备/运行链验收。
-- 真实 Provider、模拟器/真机、生产 Bridge、云 CI、OTA/发布 NOT_RUN；原生 UI 自动化工具缺失为 BLOCKED。
-- 最新提交与验证身份在后续条目登记；不能从本节推断部署状态。
+- 分支：`codex/sync-chain-extraction-20261001`；仅隔离worktree本地提交。
+- 起始SHA：`930f1267e949c6cf2095761cc71c43cca08c6dc3`。
+- 阶段：A0–A3/B1、B2、C1a–C1h的选定接缝已完成源码门禁；C1h关闭真实same-ID旧A消费与严格commit顺序合同R54/R55。
+- 最新完整Mobile产品/测试输入：`4e6d3d4a82998016d018239d5b73cd6e1f46ed2d` clean；3412 PASS / 4 SKIPPED，348.327秒，concurrency=1。
+- 定向83项PASS（38.202秒）：10条真实接收链、3条owned启动失败清理、70条公开队列/权限/终态/commit顺序保护。
+- analyze 0 error/warning，1017既有info；severity/file/完整文本/code及重复数量比对8178295d无增减，忽略行列；5个改动Dart文件format 0 changed。
+- 固定4e6d3d4a的GPT-6 Luna/max只读复核无新增可证明P0–P2，未运行独立测试；E082关于suspend清票的文字已纠正。
+- C1h实际natural equal窗口中A仍pending1，B已SQL提交；原Updater接纳真实后继receipt后pending/bytes0，再在同一页面合法canonical A单次接替。
+- C1h仅三个原Mobile产品文件改动：Service在完整SQL/current fence后附本地顺序、status DTO只携带不序列化、原Cubit按严格同stream后继证明退休。原SessionList/Updater/Repository、Bridge生产源码/原tests/fixture/依赖均不变。
+- Bridge完整2547 PASS / 1 SKIPPED仍精确归911a4f60；C1h核对其中295个既有文件blob不变，仅新receiver harness，不伪造全Bridge重跑。build/typecheck继承同原生产/依赖输入，新harness语法另有实际收据。
+- 本批fixture错误0/2、真实消费red1/1、公开顺序red7/3及先前所有FAIL完整保留；当前绿灯不覆盖历史R29、095cab00或R53 watcher timeout的未知直接原因。
+- 原C1e完整3396/4与import复查、C1f71项、C1g全量/敏感性/恢复分别保留历史输入；最新C1h门禁见E083和ACCEPTANCE.json的supplementalC1h。
+- 下一C1i先审实际overlay自身capacity await后的replacement及订阅切换/无receipt缓存的证明边界；R47完整策略、R45 visual 256/257、R49无ID旧组合仍未验收，不扩大到C2重写。
+- 真实Provider、模拟器/真机、生产Bridge、云CI、OTA、签名安装/stable/发布NOT_RUN；原生UI工具缺失BLOCKED。原始checkout/修复checkout和生产服务未操作。
 
 ## E001 — 建立隔离执行与文档
 
@@ -1963,6 +1961,45 @@ receipt不由fromJson读取、toJson不写出，避免wire/缓存JSON伪造本�
 Cubit只接纳loaded、authoritative bridgeRuntime且实际当前runtime/source匹配的本地receipt；同stream旧/重复receipt不替代当前owner。
 exact authority+turn先apply；不匹配事件若同source/subscription的当前合法receipt严格后继则退休，未来event不被旧receipt删除。
 原timestamp严格isAfter保留；business duplicate但receipt更晚时仅更新原状态证据并flush，不重复推进UI/控制状态。
-所有原null/source/runtime/suspend状态时间失效出口同时清receipt；没有第二个queue/map/可排序UUID缓存。
+原null/source/runtime的状态时间失效出口同时清receipt；suspend撤销projection/authority lease，保留receipt也不能独立取得退休资格。
+更晚的合法commit才能重建lease，重复/旧receipt不得复活；没有第二个queue/map/可排序UUID缓存。
 诊断增加当前receipt subscription/sequence，用真实receiver trace核对，不将缺receipt的cached-only路径宣称已证明equal顺序。
 接下来固定产品/测试输入，真实双窗口、十项public顺序/71项原保护、完整Mobile/analyze/format与固定源码只读review分别登记。
+
+## E083 — C1h固定输入完整接受与真实相等时钟green
+
+最终产品/测试输入 `4e6d3d4a82998016d018239d5b73cd6e1f46ed2d` clean。
+`c1h-final-selected-receivers-and-order`：83 PASS，0 / 38.202秒；10条真实接收链（原7+C1f1+C1h2）、
+3条owned Node清理、原60条public队列/权限/终态与新10条commit顺序合同。原断言/业务期限未放宽。
+`c1h-final-full-mobile`：实际完整3412 PASS / 4 SKIPPED，0 / 348.327秒，concurrency=1；
+从3396增加C1f4、C1h2、新public10，未把selected用例重复计入全量。
+`c1h-final-full-analyze`：0 error/warning、1017既有info，0 / 17.350秒；
+`c1h-final-analysis-comparison.json`按severity/file/完整文本/code/重复数量与8178295d逐项相等，仅忽略移动后的行列。
+`c1h-final-changed-dart-format`：5 files / 0 changed，0 / 0.593秒。
+
+`c1h-final-replacement-receiver-audit.json`审计定向与完整运行的四条实际receiver，28份trace文件逐项hash。
+同public ID、不同actual process/resume stdio连接与opaque UUID由原SessionManager替换，不手造authority/time或SQL。
+定向无B新item：A observedAt 05:50:03.111Z、B page 05:50:03.110Z，receipt sequence58严格后继A overlay44，
+即B墙钟早1ms也不滞留旧A；原页面接纳前pending1/无mutation，接纳后pending/bytes0，canonical A随后同页单次。
+完整无B新item：A event与B page自然完全相等 `2026-10-03T05:52:06.638Z`，
+实际B status commit sequence51严格后继A overlay37，原页面接纳后pending/bytes0；历史A同页单次、overlay0。
+两个B新item窗口接纳前A+B pending2、无mutation；接纳后仅B transient单次，随后canonical A+B各一次且overlay/bytes0。
+完整新item窗口B status69先于B overlay70：exact authority+turn先apply，不能把后到的合法B当旧消息退休。
+所有receipt序号均匹配实际完整status batch最后一页；wire JSON无receipt，SQL重读仍无该本地证据。
+旧b493e9ea自然equal时钟red和8c5002a9的7 PASS/3 FAIL原日志保留；不是放宽时间比较/更换断言后取得PASS。
+
+`c1h-final-input-identity.json`：只改3个原Mobile产品文件、新增2个Mobile测试与1个Bridge receiver harness；
+原SessionList/Updater/Repository、C1f receiver、共享helper、原七黑盒与全部原Mobile tests逐项blob不变。
+911a4f60中的295个Bridge文件及锁文件全部不变；整个Bridge tree因新harness变化。
+Bridge完整2547/1、noEmit及原build分别按既有精确生产/test/fixture/dependency输入继承，不称新全量运行；
+新harness语法实际7028b503收据0 / 0.182秒，其blob此后不变，Mobile本批确实执行原TS入口。
+
+固定4e6d3d4a GPT-6 Luna/max只读复核无新增可证明P0–P2，未运行独立测试；
+receipt生成/fence、JSON边界、原对象投影、future/重复/旧receipt和false lane合法canonical均核对。
+复核指出E082误写suspend清receipt；源码实际撤销projection/lease，current lease guard与旧序号拒绝阻止旧票复活，
+root修正文档，不为文字一致性新增未经需要证明的产品变更。见c1h-final-independent-review.json。
+
+R54实际两个消费窗口与R55十项公开顺序合同接受；完整R47仍未关闭：无receipt cached-only/跨订阅与overlay专用await-after仍须各自取证。
+历史R29/095cab00/R53原因继续未知，R45/R49仍NOT_RUN；设备、真实Provider、生产、云CI、OTA、签名安装/发布分别NOT_RUN，原生UI BLOCKED。
+回退检查顺序：7028b503设施→b493e9ea屏障→8c5002a9值/十项red→4e6d3d4a消费行为；保留红灯合同与合法新B/canonical断言。
+不把red checkpoint当运行候选。README/PLAN/地图/矩阵/入口/RUNBOOK与supplementalC1h同步；仅本地提交，未merge/push/部署。

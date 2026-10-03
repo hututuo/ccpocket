@@ -9,7 +9,9 @@ queue-only authority 留存是原有且未审定的策略，不能从当前十�
 C1f新增R50：真实producer status已入SQL但页面尚未观察authority时，原quarantine合法等待、原Updater接纳后单次canonical接替。
 固定84493fc6的71项选定组合/目标静态/独立复核通过（E073）；产品未改，完整3396/4仍在16196f05。
 这关闭的是未观察authority的正向等待。随后C1g在实际Bridge同public ID replacement与catalog capacity/public ACK组合通过（R52）；
-旧A生产pending在ACK后退休，新B在完整status之后单次wire。Mobile已接收A/未观察B及完整R47仍未验证。
+旧A生产pending在ACK后退休，新B在完整status之后单次wire。
+C1h又证明Mobile已收到旧A/尚未观察B的真实red→green（R54），纯本地commit receipt严格后继可退休旧事件，合法未来事件另有R55保护。
+固定4e6d3d4a完整3412/4与83项通过；cached-only/跨订阅和overlay自身await-after尚未证明，完整R47仍开放。
 
 ## 两套队列不能合并
 
@@ -37,7 +39,7 @@ terminal ticket 只保存 generation/source/inputRevision，用于防止过期�
 | _validateDetachedVisualTurn | 没有 turn ID 则继续隔离；同/不同 turn 与 terminal 分别处理 | buffered replay 在原 _applyDetachedVisualMessage；不得制造 turn ID 或提前给 control lease |
 | _onDetachedRuntimeOverlay | provider/thread、认证 Bridge/source、runtime/origin、rejected authority、message turn、dedup 的 admission | 不把完整 Cubit/Bridge/Service 传给 queue helper；admission 保留唯一位置 |
 | _quarantineDetachedRuntimeOverlay | insertion order、byte/count rejection 与只读统计 | duplicate ID 不计两次容量；超限不淘汰先前消息；不发送 ACK 或写 SQL |
-| _flushPendingDetachedRuntimeOverlays | 当前匹配 apply；明确 stale 删除；其他仍 pending | 复制队列迭代，remove-before-apply；回调/重入后不保留负 bytes |
+| _flushPendingDetachedRuntimeOverlays | exact authority+turn先apply；当前合法同stream commit receipt严格后继或原时间事实证明stale才删除；其他pending | 复制队列迭代、remove-before-apply；无receipt/跨订阅不得冒用顺序；回调/重入后不保留负bytes，R54/R55 |
 | _resetDetachedRuntimeOverlayTracking | 默认清 queue/bytes、accepted IDs 与原 tracking | suspend/source/binding/close/显式提交经原完整 reset；已核对同binding/authority的可见turn退休只清visible tracking，原flush再判pending；不能只迁走map留一份bytes |
 | _reconcileDetachedRuntimeOverlayForStatus | 分类并清旧 runtime rows / aliases / tracking | 仅有已呈现tracking才核对其authority mismatch；queue-only早退，非匹配且未证明旧的消息继续隔离；在visual reset清alias前执行 |
 | close | cancel subscriptions、reset overlay tracking 后 Cubit close | 回调检查 isClosed；StreamingStateCubit 的 flush timer 由其自己的 close 退休；不承诺未经验证的同步 join |
@@ -88,7 +90,8 @@ map、bytes、remove、clear已一起迁移，原状态已删除；clear/flush/c
 visual pending 暂不迁移；256/257 与 future terminal 策略未证明前不把两种 queue 做通用 coordinator。
 C1e已完成已知runtime身份的原mutation接纳契约（R48），缺字段的完整远端归属仍R49。
 Bridge组合已补R52（E077），固定911a4f60全量重放2547/1、类型/语法及敏感性恢复通过；首次catalog监听timeout另留R53。
-下一批C1h按[authority生产/消费入口](QUEUE-AUTHORITY-ENTRY.md)接真实Mobile/SQL/页面，分清已收到旧A与尚未观察B；R47仍开放。
+C1h已按[authority生产/消费入口](QUEUE-AUTHORITY-ENTRY.md)闭合实际Mobile两个窗口与十项顺序合同（R54/R55 / E083）。
+下一C1i补overlay自身await-after，另审cached-only/订阅切换；R47仍开放，暂不搬visual pending。
 每次结构提交保持原消息、容量、deadline 与拒绝行为；新增策略另起行为批。
 同输入的 public 契约、原七黑盒、全 Mobile/analyze/format、固定 SHA 独立复核及回退依赖共同验收。
 Bridge 或 fixture source 未改时用精确 Git tree/lock 对象继承既有门禁，不把继承写成重跑。

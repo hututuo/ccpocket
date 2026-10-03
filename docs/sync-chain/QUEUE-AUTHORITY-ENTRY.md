@@ -78,15 +78,29 @@ A pending于原catalog capacity处，actual同public ID replacement创建B及新
 错误“不同authority仍保留A”敏感性按预期FAIL（pending0→1）；finally恢复原产品SHA256及clean后完整Bridge重放2547/1。
 目标语法/类型和固定SHA只读review通过，原始FAIL、恢复及trace见E074–E077 / supplementalC1g。
 
-## 下一批C1h：实际Mobile旧A与未观察新B
+## C1h：实际Mobile旧A与未观察新B已闭合
 
-步骤5–6仍NOT_RUN：先让实际A overlay经过原wire/Service/SQL并处于无visible owner的quarantine，
-再用原replacement入口产生同public ID的B。分别检查B刚替换尚无新notification、B真正产生新item后两个窗口。
-source、binding、producer authority、status observedAt与page接纳各记录实际值，不能为了得到red手造时间/authority。
-有限延迟只控制原Updater观察时机，不重排wire、不改SQL/consumer、不删合法新B。
-若旧A是否失效尚缺消费方可用的事实，先记录未知；若实际事实已能判定且行为错误，保存red再在原owner窄修。
-R47完整策略及overlay专用capacity await-after replacement仍NOT_RUN；此入口不是清理所有不匹配authority的正确性证明。
-READY timeout/非法JSON/缺字段的owned子进程清理已另列R51，scope限新增测试，不触碰生产Bridge。
+步骤5–6的live receipt两个消费窗口在4e6d3d4a通过；原b493e9ea自然equal时钟1 PASS/1 FAIL保留。
+A先经原wire/Service/SQL进入无visible owner quarantine；原replacement创建同public ID的新process/UUID B。
+仅控制原Updater观察时机，不重排wire/改SQL/伪造时间；B无新notification和实际新item分别取证。
+原Service在完整status batch SQL commit及current fence后生成本地source/subscription/final sequence receipt，
+原status对象经原SessionList/Updater抵达Cubit；JSON不读写receipt，Repository/DB schema保持不变。
+current bridgeRuntime lease与同source/subscription/runtime且严格后继的receipt证明旧A；exact authority+turn仍先apply。
+定向B page墙钟比A event早1ms仍可退休；完整回放自然相等05:52:06.638Z，实际B commit51>A overlay37，
+原页面接纳后pending/bytes0，合法canonical A在同一页面单次。B新item窗口只先显示B，随后canonical A+B各一次。
+十项public保护旧/未来、缺receipt/跨source/跨sub/同seq、duplicate新receipt、旧receipt、null reset与JSON不带票（R55）；
+8c5002a9的7/3 red→4e6d3d4a的83项组合/完整3412/4，静态/格式/固定SHA只读review均通过，详见E078–E083。
+suspend撤projection/authority lease，票本身不能恢复权限；null/source/runtime的原状态时间失效接点同时清票。
+四条实际receiver的28份trace及295个既有Bridge文件不变证明见supplementalC1h。
+
+## 下一C1i与R47剩余证明
+
+先区分原sendPendingRuntimeOverlays的capacity await已经进入，与C1g的catalog发送gate；
+在自身await期间实际replacement，public ACK恢复后同时检查旧A、新B、完整status顺序及关闭前budget。
+另审无receipt的SQL close/reopen/cached-only、同源订阅替换与未来event；跨stream sequence不能比较。
+缺票不能虚构顺序或降级成>=时间比较，合法未来事件不能为清队列全部删除；先对正确可判定行为留red，再在原owner修。
+R47完整策略仍NOT_RUN；C2结构迁移、R45 visual策略与R49无ID远端归属不得借本批PASS推进。
+READY timeout/非法JSON/缺字段owned清理仍R51，scope限测试；生产Bridge与运行服务未操作。
 
 ## 并列未知
 

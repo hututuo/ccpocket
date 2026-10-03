@@ -198,3 +198,18 @@ repair transaction 接受后仍走原通知出口；图不表示所有事务都�
 293个既有Bridge文件及全部Mobile输入未改；整个Bridge tree因新测试/harness变化，不能继承旧全量当本次运行。
 E077 / ACCEPTANCE.json记录本次全量、类型/语法、只读review、五份trace hash与保留的catalog watcher timeout。
 下一Mobile合同需区别已到SQL的A、同public ID的新B事实及页面尚未观察B；不直接从Bridge正确发送推断Cubit策略正确。
+
+## C1h：SQL提交顺序沿原status对象到页面
+
+| 事实/责任 | 唯一原接点 | 当前证明 |
+|---|---|---|
+| 完整status batch事务提交且仍当前 | Service._stageConversationStatusPage / 原Repository | commit后生成本地source/subscription/最后sequence receipt，提交前或失效时不发布 |
+| 顺序值携带/JSON边界 | ConversationSyncV2Status.commitReceipt / withCommitReceipt | immutable值；fromJson不读/toJson不写，SQL重读自然无票，R55 |
+| 已提交status对象投影 | 原SessionList.applyCommittedStatusDelta / catalogSnapshotChanges / 原Updater | 不新增writer/观察总线，原对象保持票直到消费 |
+| 接纳与旧事件退休 | 原Cubit.updateDetachedProviderStatus / _flushPendingDetachedRuntimeOverlays | exact authority+turn先apply；current lease、source/sub/runtime、严格后继receipt才增加旧事件证据 |
+| pending存储/bytes | RuntimeOverlayQuarantine | 原唯一map/bytes/FIFO/拒绝策略不变，Cubit决定eligibility |
+
+固定4e6d3d4a完整Mobile3412/4、83项及实际equal窗口通过，E083记录red/green和28份trace hash。
+receipt不是wire sent、ACK或墙钟；只有真实SQL提交后才生成，不拥有业务authority，也不持久化第二份状态。
+cached-only/旧订阅不能取得本stream顺序证明，保留原保守规则。suspend撤lease，null/source/runtime失效清票。
+Bridge生产、原Mobile测试/SessionList/Updater/Repository与依赖不变；完整R47/R45/R49与设备/真实Provider仍未验收。

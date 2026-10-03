@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "scope": "selected C1c/C1d/C1e source and fixture contracts, C1f receiver/owned startup supplement, and C1g actual Bridge replacement/capacity/ACK test-only supplement; not whole runtime or release acceptance",
+  "scope": "selected C1c–C1h source/fixture contracts; C1h live local SQL commit-order receipt and actual same-ID receiver acceptance; not whole runtime or release acceptance",
   "branch": "codex/sync-chain-extraction-20261001",
   "workspace": "/Users/developer/.codex/worktrees/sync-chain-20261001/ccpocket-compat",
   "fullMobileAndReviewSha": "16196f05bf60943c1ebbc49475353a7b085fa1a4",
@@ -162,7 +162,7 @@
   ],
   "unacceptedPolicies": [
     "R45 visual pending 256/257",
-    "R47 queue-only old versus future authority",
+    "R47 whole old/future authority policy: cached-only without receipt, cross-subscription and overlay-specific await-after replacement remain unproved",
     "R49 remote ownership without optional runtime ID"
   ],
   "evidenceDirectory": "/Users/developer/AI agent/Codex/_tmp/ccpocket-sync-chain-20261001",
@@ -438,7 +438,7 @@
     ],
     "processEntries": "E066-E073"
   },
-  "bridgeTreeScope": "historical unchanged production/fixture tree for original gates; current test/harness tree recorded in supplementalC1g",
+  "bridgeTreeScope": "historical original product/fixture tree; subsequent accepted test/harness trees recorded in supplementalC1g and supplementalC1h",
   "supplementalC1g": {
     "state": "PASS",
     "scope": "R52 actual same-public-ID process replacement while original catalog capacity waits, released by public cumulative ACK; Bridge only",
@@ -698,5 +698,282 @@
       "evidence": "/Users/developer/AI agent/Codex/_tmp/ccpocket-sync-chain-20261001/c1g-catalog-timeout-source-review.json",
       "evidenceSha256": "4e446cb29012e959069b62dcb4f15332d20c776bfdb234b044ceeefd81e8cfc3"
     }
+  },
+  "historicalTopLevelInputsScope": "fullMobileAndReviewSha/productTree/gates retain C1e actual inputs; latestSourceAcceptance points to C1h actual gates",
+  "latestSourceAcceptance": {
+    "sourceAndTestSha": "4e6d3d4a82998016d018239d5b73cd6e1f46ed2d",
+    "supplement": "supplementalC1h",
+    "mobilePassed": 3412,
+    "mobileSkipped": 4,
+    "selectedPassed": 83
+  },
+  "supplementalC1h": {
+    "state": "PASS",
+    "scope": "actual same-public-ID Mobile receiver two live-receipt windows and ten public commit-order contracts",
+    "sourceAndTestInputSha": "4e6d3d4a82998016d018239d5b73cd6e1f46ed2d",
+    "productionSourceChanged": true,
+    "changedProductPaths": [
+      "apps/mobile/lib/features/chat_session/state/chat_session_cubit.dart",
+      "apps/mobile/lib/features/conversation_content_sync/conversation_content_sync_service.dart",
+      "apps/mobile/lib/models/local_features/slots/conversation_sync_v2_protocol_slot.dart"
+    ],
+    "existingBridgeFilesChanged": [],
+    "existingMobileTestFilesChanged": [],
+    "originalSessionListUpdaterRepositoryUnchanged": true,
+    "dependencyChanged": false,
+    "fullMobileRerun": true,
+    "fullBridgeRerun": false,
+    "inputIdentity": {
+      "evidence": "/Users/developer/AI agent/Codex/_tmp/ccpocket-sync-chain-20261001/c1h-final-input-identity.json",
+      "evidenceSha256": "4f32af2cff5ef3148ed6158be2f9c31932ea3babef0eaab6b2a54a8d5c1caae3"
+    },
+    "gates": {
+      "mobileSelected": {
+        "state": "PASS",
+        "receipt": "/Users/developer/AI agent/Codex/_tmp/ccpocket-sync-chain-20261001/c1h-final-selected-receivers-and-order.json",
+        "receiptSha256": "b03ec7c2ae0213321b009da5ab0721649f85cb6e52a76443de1622713dedbac4",
+        "log": "/Users/developer/AI agent/Codex/_tmp/ccpocket-sync-chain-20261001/c1h-final-selected-receivers-and-order.log",
+        "logSha256": "a965d00d0e78b71f35d31f536cb1c36f3d057d048f1b4e5bd2d48110bb9221dd",
+        "executedSha": "4e6d3d4a82998016d018239d5b73cd6e1f46ed2d",
+        "durationSeconds": 38.202,
+        "exitCode": 0,
+        "inputTrackedDiffSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "inputWasClean": true,
+        "passed": 83,
+        "skipped": 0,
+        "realReceiverChains": 10,
+        "ownedStartupCleanupContracts": 3,
+        "publicContracts": 70,
+        "concurrency": 1,
+        "inherited": false
+      },
+      "mobileFull": {
+        "state": "PASS",
+        "receipt": "/Users/developer/AI agent/Codex/_tmp/ccpocket-sync-chain-20261001/c1h-final-full-mobile.json",
+        "receiptSha256": "6bd378c4dd7f0aa9e385d5b055a8e42b73dec22d5495723fed3b594de4249f40",
+        "log": "/Users/developer/AI agent/Codex/_tmp/ccpocket-sync-chain-20261001/c1h-final-full-mobile.log",
+        "logSha256": "c07e5ff1d9c971da19b1612ecba0a6c2557f15fad1295af5755c7d11e9175444",
+        "executedSha": "4e6d3d4a82998016d018239d5b73cd6e1f46ed2d",
+        "durationSeconds": 348.327,
+        "exitCode": 0,
+        "inputTrackedDiffSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "inputWasClean": true,
+        "passed": 3412,
+        "skipped": 4,
+        "concurrency": 1,
+        "inherited": false
+      },
+      "mobileStatic": {
+        "state": "PASS",
+        "receipt": "/Users/developer/AI agent/Codex/_tmp/ccpocket-sync-chain-20261001/c1h-final-full-analyze.json",
+        "receiptSha256": "39e768eff408510a39f2b89ce281e690b23e05c1d1010ee6e0454b0362be79d4",
+        "log": "/Users/developer/AI agent/Codex/_tmp/ccpocket-sync-chain-20261001/c1h-final-full-analyze.log",
+        "logSha256": "47df4aebbe722c8b97bb7df2cdbcaa2c7110682f94934f91b68e61fe00a69853",
+        "executedSha": "4e6d3d4a82998016d018239d5b73cd6e1f46ed2d",
+        "durationSeconds": 17.35,
+        "exitCode": 0,
+        "inputTrackedDiffSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "inputWasClean": true,
+        "errors": 0,
+        "warnings": 0,
+        "existingInfo": 1017,
+        "newDiagnostics": 0,
+        "analysisComparison": {
+          "evidence": "/Users/developer/AI agent/Codex/_tmp/ccpocket-sync-chain-20261001/c1h-final-analysis-comparison.json",
+          "evidenceSha256": "1bd9cd15a2c0bb212521770dab25cdcb44db69f7f6cdfe4740c0602c1d31c555"
+        },
+        "inherited": false
+      },
+      "changedDartFormat": {
+        "state": "PASS",
+        "receipt": "/Users/developer/AI agent/Codex/_tmp/ccpocket-sync-chain-20261001/c1h-final-changed-dart-format.json",
+        "receiptSha256": "6319efc6748ec28839df2ebab94b2bb6295e6fc611200dffab7a16465295ecd0",
+        "log": "/Users/developer/AI agent/Codex/_tmp/ccpocket-sync-chain-20261001/c1h-final-changed-dart-format.log",
+        "logSha256": "c4ed36a21abfd4af6b873ecae77595d2d30794bfb2b366bc41501c18cbfcf746",
+        "executedSha": "4e6d3d4a82998016d018239d5b73cd6e1f46ed2d",
+        "durationSeconds": 0.593,
+        "exitCode": 0,
+        "inputTrackedDiffSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "inputWasClean": true,
+        "files": 5,
+        "changed": 0,
+        "inherited": false
+      },
+      "newHarnessSyntax": {
+        "state": "PASS",
+        "receipt": "/Users/developer/AI agent/Codex/_tmp/ccpocket-sync-chain-20261001/c1h-first-harness-syntax.json",
+        "receiptSha256": "9bfd947a5b7f8c0ef76034c9d1ec11fe6948ceefe5d45fe558f14039873e3409",
+        "log": "/Users/developer/AI agent/Codex/_tmp/ccpocket-sync-chain-20261001/c1h-first-harness-syntax.log",
+        "logSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "executedSha": "7028b503e15e8e9ad56a96efd75526282ad8b890",
+        "durationSeconds": 0.182,
+        "exitCode": 0,
+        "inputTrackedDiffSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "inputWasClean": true,
+        "inheritedForSameBlobAtFinalInput": true,
+        "finalBlob": "367206a5a4b4c9130b2bd44af98ddf9d28f15417"
+      },
+      "bridgeFullInherited": {
+        "state": "PASS",
+        "executedSha": "911a4f60084a9ad80be43fa25c13124d01a83b8d",
+        "passed": 2547,
+        "skipped": 1,
+        "inherited": true,
+        "receiptReference": "supplementalC1g.gates.bridgeFull",
+        "scope": "all 295 original files/dependencies equal; new receiver harness executed by actual Mobile run"
+      },
+      "bridgeBuildAndTypecheckInherited": {
+        "state": "PASS",
+        "inherited": true,
+        "scope": "unchanged original TS production/build input and dependencies; historical gate identities retained"
+      },
+      "independentReview": {
+        "state": "PASS",
+        "executedSha": "4e6d3d4a82998016d018239d5b73cd6e1f46ed2d",
+        "readOnly": true,
+        "testsRunByReviewer": false,
+        "evidence": "/Users/developer/AI agent/Codex/_tmp/ccpocket-sync-chain-20261001/c1h-final-independent-review.json",
+        "evidenceSha256": "d26fdfb2aeafa2536b7b6b29e3e458719c9fb9861f7e63ad14ca693a717a17dc"
+      }
+    },
+    "receiverAudit": {
+      "state": "PASS",
+      "executedSha": "4e6d3d4a82998016d018239d5b73cd6e1f46ed2d",
+      "receiverRuns": 4,
+      "traceFiles": 28,
+      "naturalEqualClockGreen": true,
+      "evidence": "/Users/developer/AI agent/Codex/_tmp/ccpocket-sync-chain-20261001/c1h-final-replacement-receiver-audit.json",
+      "evidenceSha256": "eb3a4960bd1c57e79b6583df65771bbcae20666e3d728eaec82f890202ba59b3"
+    },
+    "receiptBoundary": {
+      "generatedAfterCompleteSqlCommitAndCurrentFence": true,
+      "readFromWireJson": false,
+      "writtenToWireOrCacheJson": false,
+      "databaseMigration": false,
+      "secondQueueOrAuthorityOwner": false,
+      "exactAuthorityTurnBeforeStaleProof": true,
+      "staleProofRequiresCurrentLeaseSourceSubscriptionRuntimeAndStrictSuccessor": true,
+      "suspendClearsReceipt": false,
+      "suspendWithdrawsProjectionAndAuthorityLease": true
+    },
+    "retainedCandidateRuns": [
+      {
+        "state": "FAIL",
+        "receipt": "/Users/developer/AI agent/Codex/_tmp/ccpocket-sync-chain-20261001/c1h-first-actual-replacement-receivers.json",
+        "receiptSha256": "c7ece2d79368588943eaa2da4577fe221cd5a03f1fd4b1112ef4f235cdcbf983",
+        "log": "/Users/developer/AI agent/Codex/_tmp/ccpocket-sync-chain-20261001/c1h-first-actual-replacement-receivers.log",
+        "logSha256": "fbc08a1b6b71d8f1e7387def265a4598437ec5e5f12c0c17380dd9a5a3e1969d",
+        "executedSha": "7028b503e15e8e9ad56a96efd75526282ad8b890",
+        "durationSeconds": 24.382,
+        "exitCode": 1,
+        "inputTrackedDiffSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "inputWasClean": true,
+        "passed": 0,
+        "failed": 2,
+        "scope": "fixture barrier false negative: second public init is suppressed by original owner; not product red",
+        "audit": {
+          "evidence": "/Users/developer/AI agent/Codex/_tmp/ccpocket-sync-chain-20261001/c1h-first-invalid-init-barrier-audit.json",
+          "evidenceSha256": "c9350346c8e9e0a799a41bedc08e4b2359d5ecd1abe3cce85ff970fc147f508c"
+        }
+      },
+      {
+        "state": "PASS",
+        "receipt": "/Users/developer/AI agent/Codex/_tmp/ccpocket-sync-chain-20261001/c1h-first-receiver-analyze.json",
+        "receiptSha256": "453881b3118358d7f34c64cf09cc4f288e31d4f0557875bc1f30cbc3af95c2e4",
+        "log": "/Users/developer/AI agent/Codex/_tmp/ccpocket-sync-chain-20261001/c1h-first-receiver-analyze.log",
+        "logSha256": "4dba822d8fb2703b547b2a404c68838740d091d652e94be69b84e5e2ff7a9d64",
+        "executedSha": "7028b503e15e8e9ad56a96efd75526282ad8b890",
+        "durationSeconds": 14.712,
+        "exitCode": 0,
+        "inputTrackedDiffSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "inputWasClean": true,
+        "errors": 0,
+        "warnings": 0,
+        "infos": 0,
+        "scope": "first receiver input only"
+      },
+      {
+        "state": "FAIL",
+        "receipt": "/Users/developer/AI agent/Codex/_tmp/ccpocket-sync-chain-20261001/c1h-original-commit-barrier-receivers.json",
+        "receiptSha256": "e3d0f0b8232138b6b828be19a8c1c96d50747b0103403b95a56bedb6353dd188",
+        "log": "/Users/developer/AI agent/Codex/_tmp/ccpocket-sync-chain-20261001/c1h-original-commit-barrier-receivers.log",
+        "logSha256": "ff3c42ce84ce5d23d706d944f3676be7902d710c7fd440d8455d84d81add6c60",
+        "executedSha": "b493e9eae1806e79246d1262d5fb321e03794b60",
+        "durationSeconds": 4.011,
+        "exitCode": 1,
+        "inputTrackedDiffSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "inputWasClean": true,
+        "passed": 1,
+        "failed": 1,
+        "scope": "actual product P2 red: same-clock B accepted but A pending 1/220 bytes",
+        "audit": {
+          "evidence": "/Users/developer/AI agent/Codex/_tmp/ccpocket-sync-chain-20261001/c1h-actual-equal-clock-red-audit.json",
+          "evidenceSha256": "18009a3c9689771a9c28bb65f66a0c2dbf0a2ddd7f4fa3d15acf33b5fd29cc91"
+        }
+      },
+      {
+        "state": "PASS",
+        "receipt": "/Users/developer/AI agent/Codex/_tmp/ccpocket-sync-chain-20261001/c1h-commit-barrier-receiver-analyze.json",
+        "receiptSha256": "997fb279727792accd38d9c0b7c4ee867647551b825e76bfbc66bb2047cbc12c",
+        "log": "/Users/developer/AI agent/Codex/_tmp/ccpocket-sync-chain-20261001/c1h-commit-barrier-receiver-analyze.log",
+        "logSha256": "4dba822d8fb2703b547b2a404c68838740d091d652e94be69b84e5e2ff7a9d64",
+        "executedSha": "b493e9eae1806e79246d1262d5fb321e03794b60",
+        "durationSeconds": 13.981,
+        "exitCode": 0,
+        "inputTrackedDiffSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "inputWasClean": true,
+        "errors": 0,
+        "warnings": 0,
+        "infos": 0,
+        "scope": "actual-red receiver file only"
+      },
+      {
+        "state": "PASS",
+        "receipt": "/Users/developer/AI agent/Codex/_tmp/ccpocket-sync-chain-20261001/c1h-commit-barrier-receiver-format.json",
+        "receiptSha256": "bd38a72f2d7a155a82352c14b137896a179f463a59f7a2821ad5b7005c41b365",
+        "log": "/Users/developer/AI agent/Codex/_tmp/ccpocket-sync-chain-20261001/c1h-commit-barrier-receiver-format.log",
+        "logSha256": "ebf8691cd9669b02dd9d748aaf543551b337b2beb44f2d128dc7ffbfa0318f03",
+        "executedSha": "b493e9eae1806e79246d1262d5fb321e03794b60",
+        "durationSeconds": 0.461,
+        "exitCode": 0,
+        "inputTrackedDiffSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "inputWasClean": true,
+        "files": 1,
+        "changed": 0,
+        "scope": "actual-red receiver file only"
+      },
+      {
+        "state": "FAIL",
+        "receipt": "/Users/developer/AI agent/Codex/_tmp/ccpocket-sync-chain-20261001/c1h-commit-order-public-red.json",
+        "receiptSha256": "1fc53fecaaba14b85afc1da594a4ce9e3c5cff92bb52bef38d5be36255921075",
+        "log": "/Users/developer/AI agent/Codex/_tmp/ccpocket-sync-chain-20261001/c1h-commit-order-public-red.log",
+        "logSha256": "f0e1a71d251cf78b93c28d4e140547292dc47d99af9c670e78725133528ff097",
+        "executedSha": "8c5002a9f23352b5cc18105eb757f756175c8d4c",
+        "durationSeconds": 2.493,
+        "exitCode": 1,
+        "inputTrackedDiffSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "inputWasClean": true,
+        "passed": 7,
+        "failed": 3,
+        "scope": "baseline consumer: equal-clock retirement, duplicate newer receipt flush and old receipt replacing owner fail"
+      }
+    ],
+    "notAccepted": [
+      "R47 complete queue-only replacement/future policy",
+      "cached-only without receipt or cross-subscription equal-clock retirement proof",
+      "overlay-specific waitForOutboundCapacity await-after replacement",
+      "R45 visual pending 256/257",
+      "R49 missing runtime ID remote ownership",
+      "historical R29/095cab00/R53 direct failure causality",
+      "real Provider/simulator/device/production/cloud CI/deployment/OTA/sign/install/stable/release"
+    ],
+    "processEntries": [
+      "E078",
+      "E079",
+      "E080",
+      "E081",
+      "E082",
+      "E083"
+    ]
   }
 }

@@ -1,5 +1,13 @@
 # 消息链路梳理与渐进抽取
 
+当前接受断点是 `4e6d3d4a`：完整Mobile **3412 PASS / 4 SKIPPED**，定向83项PASS，
+analyze 0 error/warning、1017既有info无增减，固定源码只读复核无新增可证明P0–P2。
+C1h已将自然相等时间下滞留的旧runtime事件证明为red，再在原Service/status DTO/Cubit三个接点窄修；
+实际SQL提交顺序由纯本地receipt沿原对象传到原页面，不改JSON、数据库、协议或另造队列。
+原SessionList/Updater/Repository、既有tests/fixture和依赖不变；仅隔离分支本地提交。
+最新范围/回退见[过程E083](PROCESS.md#e083--c1h固定输入完整接受与真实相等时钟green)、[操作说明](RUNBOOK.md)、[精确门禁](ACCEPTANCE.json)。
+剩余R47完整策略、R45/R49及历史失败归因仍开放；真实Provider/设备/部署/发布未验收。
+
 本轮从 `930f1267e949c6cf2095761cc71c43cca08c6dc3` 建立独立分支
 `codex/sync-chain-extraction-20261001`。首先验证选定短闭环，再抽取已证明边界的职责。
 原始 main、修复分支及生产运行状态不是本分支的操作目标。
@@ -71,8 +79,9 @@ C1g随后仅新增Bridge组合测试/harness，原293个Bridge文件及全部Mob
 错误保留旧A的敏感性实验按预期FAIL（应0实际1），finally逐字节恢复源码后完整Bridge重放 **2547 PASS / 1 SKIPPED**，
 typecheck/语法及固定SHA只读review通过。首次全量的既有catalog监听5秒超时仍独立保留（R53）：
 目标9项及完整重放PASS不能关闭其未知因果。精确收据和5份trace hash见E074–E077 / supplementalC1g。
-C1h已实际执行并在b493e9ea保存自然equal时钟的消费red（R54）：B已被原页面接纳，旧A仍pending1/220bytes；B新item窗口PASS。
-定位与窄修顺序见E078–E080，当前新增合同未闭合，不据旧全量宣称新候选通过。
+C1h在b493e9ea保存自然equal时钟消费red（R54）：B已被原页面接纳，旧A仍pending1/220bytes。
+随后8c5002a9十项public合同7/3 red，原Service/status DTO/Cubit窄修4e6d3d4a后83项/完整3412/4 PASS；
+真实相等时钟green、同页合法canonical及未来事件保护已核对（R54/R55），保留全部red；定位/修复/接受见E078–E083。
 后续[authority生产/消费入口](QUEUE-AUTHORITY-ENTRY.md)保留合法未来事件，携带原Service真实SQL commit顺序证明旧A退休；
 R47完整策略、overlay自身await后的replacement、无runtime字段归属及visual pending 256/257仍未验收。
 

@@ -286,3 +286,40 @@ Bridge整个tree因新增文件改变，因此本次全Bridge实际重跑；原�
 回退仅新测试/harness与相关文档：19b2939f初始合同、1d430fe2合法ACK、911a4f60关闭前直接pending断言分别有checkpoint。
 不删除已经定位的敏感性合同、不用放宽期限掩盖FAIL；现有生产路径没有本批产品改动可回退。
 C1h接Mobile/SQL/原页面同ID替换，B刚替换尚无新notification与B真正新item分别取证；仍不是部署/发布授权。
+
+## C1h复跑、改动位置与回退
+
+当前接受输入4e6d3d4a；原本3396/4仍是16196f05历史收据，本批完整3412/4是实际新运行。
+使用前文CCPOCKET_FLUTTER_BIN/CCPOCKET_DART_BIN和CCPOCKET_NODE，在apps/mobile执行：
+
+```bash
+"$CCPOCKET_FLUTTER_BIN" test --no-pub --reporter expanded --concurrency=1 \
+  test/blackbox/conversation_authority_replacement_receiver_test.dart \
+  test/detached_runtime_status_commit_order_test.dart \
+  test/blackbox/conversation_authority_pending_receiver_test.dart \
+  test/blackbox/conversation_live_segment_receiver_test.dart \
+  test/blackbox/conversation_latest_turn_gap_receiver_test.dart \
+  test/blackbox/conversation_full_page_test.dart \
+  test/detached_runtime_overlay_queue_test.dart \
+  test/detached_runtime_authority_test.dart \
+  test/detached_terminal_streaming_test.dart
+"$CCPOCKET_FLUTTER_BIN" test --no-pub --reporter expanded --concurrency=1
+"$CCPOCKET_DART_BIN" analyze .
+```
+
+定向83项（10实际链、3owned清理、70public）；完整3412 PASS/4 SKIP；分析0 error/warning、1017既有info文本/重复数量不变。
+实际harness使用自建Node22 --import tsx加载原TS，隔离HOME/Provider/端口/SQL，仅延迟原Updater观察，不改wire顺序或运行Bridge。
+新harness语法7028b503实际PASS且blob此后相同。Bridge原295个文件未变，全量2547/1仍属911a4f60；原build/typecheck分别继承精确原输入。
+真实equal red b493e9ea→完整equal green4e6d3d4a；公开7/3 red8c5002a9→83/全量green。所有收据/log/hash及28份trace见supplementalC1h。
+
+| 改动 | owning path/提交 | 回退时必须保留 |
+|---|---|---|
+| 新actual same-ID receiver/harness、正确commit屏障 | 7028b503 / b493e9ea；两新文件 | 不等待原实现不会公开的第二init；actual map/process/UUID和SQL/SessionList B屏障独立；合法新B/canonical仍断言 |
+| immutable本地receipt与十项red | protocol_slot / 8c5002a9；新增public test | fromJson不读/toJson不写、缓存自然无票；新consumer API依赖不得留下编译断裂 |
+| 完整SQL commit后附顺序、Cubit消费/去旧票 | 原Service/Cubit / 4e6d3d4a | exact authority+turn先apply；同stream严格后继、当前lease/runtime/source；null/source/runtime清票、suspend撤lease；原时间回退与容量不放宽 |
+| 原页面false lane历史A正向 | receiver / 8c5002a9 | 同一Updater、真实SQL window、A单次与overlay/pending归零 |
+
+单独撤4e6d3d4a可得到保留三项public red的行为基线，不应运行/部署；完整移除receipt需先适配Service/Cubit/API再处理8c5002a9。
+仅回退测试设施不等于撤销产品行为；既有helper/七黑盒/C1f没有依赖新harness。保留red与正向断言，每个适配在隔离分支复查。
+暂停投影只撤lease；文档不得声称它一定清receipt，票本身没有authority。cached-only/跨订阅仍保守，完整R47未接受。
+下一C1i先证明overlay自身capacity await-after replacement，并列审计无receipt/订阅切换；C2与visual pending迁移仍等待正确性证据。

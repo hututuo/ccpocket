@@ -27,7 +27,8 @@ main 已有未跟踪资料，不纳入本批、不覆盖；V4 是独立候选线
 | C1e | 已知runtime身份的原mutation接纳公开red→窄修已完成，保留未绑定只读与旧版/独立target保护，E065 | 26项新契约、完整3396/4、最终静态复查与固定SHA review通过；无ID远端归属仍R49 |
 | C1f | 实际producer→wire→SQL→原页面的未观察authority等待证据及owned fixture清理已完成E073，产品未改 | 固定84493fc6的71项组合、目标静态/格式、错误策略敏感性与固定SHA复核；完整门禁仍属16196f05 |
 | C1g | 实际same-ID process replacement与Bridge catalog capacity/public ACK组合已完成E077，只新增测试/harness | 固定911a4f60全量Bridge重放2547/1、typecheck/语法/只读review、错误保留敏感性及恢复通过；首次既有catalog timeout因果仍R53 |
-| C1h | 下一证据批：真实Mobile/SQL/原页面接收旧A与未观察新B，含replacement后B尚无新通知窗口 | 同ID的新producer事实、SQL提交和页面观察分别取证；先保存可判定red，再在原owner窄修，不提前统一两个queue |
+| C1h | 实际same-ID旧A/未观察B消费red→原SQL commit本地receipt窄修已完成E083（R54/R55） | 固定4e6d3d4a的83项/完整3412/4、诊断/格式/只读review；自然equal实际green、合法新B与canonical保留 |
+| C1i | 下一证据批：overlay自身capacity await后的replacement；另审订阅切换/无receipt缓存边界 | 原ACK/producer/状态/页面事实逐项证明，不用C1g catalog gate或C1h live receipt代替；无新正确性证据不扩大结构迁移 |
 | C2 | 按领域逐批抽 Bridge handler | 连接、认证、序列、权限归属不重复实现 |
 | D | 按调用/版本矩阵退役旧分支，更新唯一文档入口 | 确认路径无支持用途；删除对应状态与文档，而非只藏入口 |
 
@@ -42,7 +43,8 @@ C1b 已在原投影模块收拢 canonical 候选准备/接受，并保留 Cubit 
 已知runtime身份的原控制lease契约见RUNTIME-AUTHORITY-ENTRY / E065。
 C1f已证明未观察authority时的合法等待与canonical单次接替（R50），三个自建process失败出口有真实退出合同（R51）。
 C1g已证明Bridge原callback与catalog capacity/public ACK组合（R52），未改生产路径。
-下一批C1h按QUEUE-AUTHORITY-ENTRY接Mobile旧A/新B消费，含B无新通知的窗口；R47仍未闭合前不扩大到C2 handler迁移。
+C1h已在原owner按真实SQL commit顺序窄修Mobile旧A/新B消费，完整门禁见E083；
+下一C1i先补overlay自身await-after replacement，再审无receipt/订阅切换边界。R47未闭合前不扩大到C2 handler迁移。
 新全量重放2547/1不关闭首次catalog watcher timeout（R53），旧失败保留原期限、日志和精确输入。
 无ID远端归属和visual overflow仍不得当已审定策略迁移。
 当前默认并发四文件重放50 PASS不关闭旧失败；
