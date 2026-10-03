@@ -2314,6 +2314,18 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
         (provider != null && status.provider != provider!.value)) {
       return;
     }
+    final statusRuntimeSessionId = status.runtimeSessionId?.trim();
+    // An unbound page can read status, but a known attachment must not adopt
+    // another runtime's snapshot or replace its already proven authority.
+    if (_detachedLiveRuntimeSessionId != null &&
+        statusRuntimeSessionId?.isNotEmpty == true &&
+        statusRuntimeSessionId != _detachedLiveRuntimeSessionId) {
+      logger.warning(
+        '[status_projection] event=runtime_authority_rejected '
+        'thread=$_projectionThreadToken reason=runtime_identity_mismatch',
+      );
+      return;
+    }
     final observedAt = DateTime.tryParse(status.observedAt)?.toUtc();
     if (observedAt == null) return;
     _detachedProviderProjectionCurrent = true;

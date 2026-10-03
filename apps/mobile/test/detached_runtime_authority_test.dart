@@ -62,7 +62,7 @@ void main() {
   });
 
   ChatSessionCubit create({
-    String runtime = _runtimeC,
+    String? runtime = _runtimeC,
     ChatImagePayloadEncoder? imagePayloadEncoder,
   }) {
     final cubit = ChatSessionCubit(
@@ -213,6 +213,28 @@ void main() {
         expect(bridge.stoppedSessionIds, isEmpty);
         expect(cubit.canMutateAttachedRuntime, isFalse);
       });
+
+      test(
+        'unbound status stays readable without granting runtime control',
+        () {
+          final cubit = create(runtime: null);
+          final status = _status(control: 'steerable');
+          apply(cubit, status);
+
+          expect(cubit.state.status, ProcessStatus.running);
+          expect(cubit.runtimeSessionIdForRead, isNull);
+          expect(cubit.canMutateAttachedRuntime, isFalse);
+          expect(cubit.sendMessage('No bound runtime'), isFalse);
+          expect(sentPayloads(), isEmpty);
+
+          cubit.updateDetachedLiveRuntime(_runtimeC);
+          expect(cubit.canMutateAttachedRuntime, isFalse);
+          // The original updater replays its committed status after binding.
+          apply(cubit, status);
+          expect(cubit.state.status, ProcessStatus.running);
+          expect(cubit.runtimeSessionIdForMutation(), _runtimeC);
+        },
+      );
 
       test('late B cannot replace the already proven C settings owner', () {
         final cubit = create();

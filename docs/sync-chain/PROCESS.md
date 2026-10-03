@@ -1568,3 +1568,38 @@ image断言先取single，在缺失输出时抛No element；为使证据明确�
 这样旧B不会授予C权限，也不会用其时间/authority替换已证明C owner或驱动C队列退休。
 无ID的旧V2/Desktop和legacy规则保留；匹配ID仍须经过所有原authority/source/turn/control门禁。
 不增加另一个权限状态或runtime身份缓存，行为修复与本批red checkpoint分开提交。
+
+## E063 — 在原接点拒绝已知不同 attachment，保留未绑定的只读事实
+
+red checkpoint `ece797f537ef7aedfc74bff39eb28dcd46325030`。
+原status接点新增一项局部比较，不新增持久状态：已绑定runtime与status的明确runtime ID不同则早退，
+不推进observedAt/signature/authority/turn，不替换合法C lease，也不驱动其queue/visual处理。
+source partition adoption仍走原接点；匹配身份仍须通过原authority、host、turn与control规则。
+
+初次九行candidate的 `c1e-runtime-authority-public-green` 并非全绿：310 PASS / 1 FAIL，
+1 / 14.544秒，diff SHA256 `7ab20a34989addddc84123b9a2ea07af64c6101d49f57cccd539541d7db3bc9d`。
+失败来自原terminal fixture的replacement正向状态仍默认携带旧runtime ID。
+修正该用例的两份状态都明确指向replacement：反向仍携带已rejected authority A，
+保证它继续测试原authority fence，而不是被新runtime guard代为拒绝；正向为新authority。
+正文、turn、原text/validation断言与期限均保留，没有删除或弱化原断言。
+`c1e-runtime-authority-contracts-green`：311 PASS，0 / 14.224秒；
+`c1e-runtime-authority-blackbox`：原三文件七黑盒PASS，0 / 30.052秒；两者diff同为
+`78783bd573fa28050871733691bbdd89fd9c1b17855f81d921e57b1aa21d074a`。
+
+Root继续核对冷启动读写分离：runtime handle尚未到达时，V2 status应只读显示，控制仍不可用；
+binding到达后经原cached status重放才重新形成lease。
+给两种capability各补该public契约，`c1e-runtime-authority-unbound-read-red`：
+24 PASS / 2行为FAIL，1 / 2.585秒，diff SHA256 `b5e8b4519001e0b6cc0b1b194fdc2f1bb270ae9b0f6106c0071bf700383a14ee`。
+九行candidate把null local handle误判为矛盾，故未获得完整验收，也未部署。
+
+最终比较只在本地binding已知时生效：known local runtime + known remote ID + 不等才拒绝。
+无binding仍读status，原getter因缺runtime handle拒绝mutation；binding变化照旧撤权并重放已提交status。
+这是原候选的窄修，不引入“无authority可写”的fallback。
+旧V2缺新增字段、legacy idle、Desktop无Bridge ID的detach、durable settings独立target保护保持。
+旧组合仍只能凭原generation/source/rejected规则判断，未证明A→B→C的完整远端归属，另列R49。
+
+`c1e-runtime-authority-final-contracts`：26项新authority、21项terminal、13项queue与原Cubit共313 PASS，
+0 / 14.237秒，diff SHA256 `3759ed8bfbb3b270a5d2a6a4fb589dc956d1a697b269af778de1baf07c819ec4`。
+三文件format 0 changed。下一步提交并冻结这份产品/测试输入，完整Mobile/analyze/format，
+原七黑盒在新全量中重新执行，再做固定SHA独立复核；不得沿用九行candidate的旧黑盒作为最终重跑。
+Bridge/依赖/黑盒源码未变时按精确Git对象继承E059对应Bridge门禁，继承与重跑各自登记。

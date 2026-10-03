@@ -24,7 +24,7 @@ main 已有未跟踪资料，不纳入本批、不覆盖；V4 是独立候选线
 | C1b | canonical prepare/admission/compose、后置提示确认及 pending focus 行为修复已完成 E041 | 十五项 canonical、十七项焦点保护及原页面因果 red/green；固定输入全量与独立复核通过 |
 | C1c | 终态/ticket/runtime身份及未知 activity 的选定修复已完成 E059/E060；历史R29仍未知 | 公开red→green、原七黑盒、完整门禁与固定SHA复核 |
 | C1d | quarantine map/bytes 单 owner 已完成 E059/E060 | 十三项public队列契约；结构保持原策略，完整门禁与取消接点复核；queue-only authority策略未审定 |
-| C1e | 先核对原 mutation lease 的远端 runtime 归属，记录旧版兼容用途与实际发送校验 | 不借用视觉清理 PASS；公开 red 与 read-only/控制/设置正反保护各自成立后才窄修 |
+| C1e | 已知runtime身份的原mutation接纳已公开red→窄修，保留未绑定只读与旧版/独立target保护，E061–E063 | 26项新契约/相关313项PASS；完整门禁与固定SHA复核待冻结。无ID远端归属仍R49 |
 | C2 | 按领域逐批抽 Bridge handler | 连接、认证、序列、权限归属不重复实现 |
 | D | 按调用/版本矩阵退役旧分支，更新唯一文档入口 | 确认路径无支持用途；删除对应状态与文档，而非只藏入口 |
 

@@ -669,7 +669,11 @@ void main() {
       );
       await pumpEventQueue();
       cubit.updateDetachedProviderStatus(
-        _status(activity: 'idle', observedAt: '2026-10-02T11:00:02.000Z'),
+        _status(
+          activity: 'idle',
+          runtime: 'runtime-replacement',
+          observedAt: '2026-10-02T11:00:02.000Z',
+        ),
         sourceFingerprint: _source,
       );
       expect(streaming.state.text, 'Final answer');
@@ -681,6 +685,7 @@ void main() {
         _status(
           observedAt: '2026-10-02T11:00:03.000Z',
           authority: 'authority-replacement',
+          runtime: 'runtime-replacement',
         ),
         sourceFingerprint: _source,
       );

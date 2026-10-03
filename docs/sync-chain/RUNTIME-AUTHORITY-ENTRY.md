@@ -13,13 +13,14 @@ A→B→C 期间 B 未被 Cubit 观察时，单个 rejected authority 槽只记 
 E061/E062 已由两种 capability 下的公开输入证明：16 项行为 FAIL / 8 项保护 PASS，
 input/approval 实际目标为 C，stop/interrupt 实际调用 C，settings 混合 C runtime 与 B authority。
 已有合法C的settings owner会被B替换，合法C image dispatch lease也会被B取消。
-原产品未改，失败日志及 red checkpoint 保留；修复后必须使用同一输入转 green。
+red时产品未改，失败日志及red checkpoint保留。E063在原接点窄修，26项新契约与相关313项PASS；
+最终完整门禁待候选冻结，不能把分项PASS写成控制全链验收。
 
 ## 唯一 owning path 与范围
 
 | 接点 | 当前事实 / 校验 | 本批需要保护 |
 |---|---|---|
-| updateDetachedProviderStatus | provider/thread/source/time/duplicate/rejected generation；authority 标成本地 binding generation | 已明确属于另一 runtime 的状态不能授予当前控制权限；只读呈现与控制准入分开 |
+| updateDetachedProviderStatus | 原source adoption/provider/thread之后，known本地binding与known远端ID矛盾则早退；其后保留time/duplicate/rejected规则 | 不推进矛盾status的时间/authority/turn，也不撤掉合法C；无binding时仍可只读显示，mutation因缺handle被原getter拒绝 |
 | _runtimeSessionIdForMutation / _hasCurrentDetachedAuthorityLease | V2 capability 要 exact lease；writable/steerable 分类 | 已知远端身份不匹配时拒绝；匹配的现有权威、turn/host规则仍成立 |
 | sendMessage / retryMessage | 捕获 runtime lease；异步图片/排队/dispatch 前后核对 generation/source/authority | stale status 不创建有效 lease；新 owner 正常发送；异步中变更仍拒绝 |
 | approve/approveAlways/reject/answer/interrupt/stop | 调用时共用 runtime mutation gate；Desktop stop另走detach规则 | 实际 Bridge send/stop/interrupt 不得发出，而不是只验证按钮状态 |
@@ -29,6 +30,9 @@ input/approval 实际目标为 C，stop/interrupt 实际调用 C，settings 混�
 本批先保护有明确 runtime 身份的已知矛盾；身份本身仍不是 authority。
 没有新增字段的旧 V2 状态无法仅凭该字段完成远端归属证明，保留原规则及其证据边界。
 不在这批移植新协议、造第二个权限owner或重写Bridge控制RPC。
+已知不同runtime的status在签名/时间接受前拒绝，避免其驱动合法当前owner的退休。
+未绑定页仍可读取status，binding到达后必须经原重新接纳形成控制lease；这两项cold-start red已窄修green。
+原replacement terminal用例只修正正反状态的runtime ID到实际replacement，保留旧authority反向保护与全部断言。
 
 ## 执行顺序
 

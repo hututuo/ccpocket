@@ -52,7 +52,8 @@
 | R45 | visual pending 256/257策略 | 对照provisional visual原则审定溢出/重放/completion副作用 | NOT_RUN；只登记原现状，暂不迁移此队列；RUNTIME-QUEUE-ENTRY |
 | R46 | 正确runtime的unknown/unavailable快照保留旧idle | 保留的activity不取得新terminal清理资格；后续authoritative idle仍结束 | PASS 21项terminal+13项queue共34项及最新全量，原20 PASS/1 FAIL red保留；E056/E057/E059 |
 | R47 | queue-only authority replacement / future authority waiting | 分清已失效旧authority与合法未来authority；不能从有visible owner的测试推断一律清理 | NOT_RUN：原reconcile在无visible tracking时早退，未证明旧的非匹配authority留存是red parent既有行为；策略未审定，本次结构未改，见RUNTIME-QUEUE-ENTRY / E059 |
-| R48 | 原mutation lease的同source旧runtime缓存归属 | 控制/设置/审批的实际目标必须属于当前已证明owner；远端runtime ID不能直接当authority | FAIL：A→B未观察→C后旧B状态授予混合target，12项实际send/stop/interrupt行为red，8项合法owner/兼容/独立target保护PASS；产品尚未改，E061 / RUNTIME-AUTHORITY-ENTRY |
+| R48 | 已知runtime身份的旧缓存与原mutation lease | 控制/设置/审批目标必须属于当前已证明owner；旧B既不能授予C权限，也不能替换合法C或取消其image lease；无binding仍只读 | PASS 分项：16行为red→green与cold-start两项candidate red→green，26项新契约/相关313项通过；最终完整门禁待冻结；无ID旧组合归属另列R49，E061–E063 / RUNTIME-AUTHORITY-ENTRY |
+| R49 | 无runtime身份字段的旧V2 / appServer组合 | 维持合法兼容用途，不伪造remote ID，不把原generation/source规则当完整远端归属证明 | NOT_RUN：旧V2合法lease、legacy idle、Desktop detach与durable target保护PASS；缺字段的连续A→B→C远端归属仍未证明，独立策略入口，E063 |
 
 R09/R10 的最上游是隔离 Provider fixture，使用真实 Bridge、协议、SQLite 和页面相关代码；
 即使 PASS，也只证明接收闭环，不冒充 R13/R14。
