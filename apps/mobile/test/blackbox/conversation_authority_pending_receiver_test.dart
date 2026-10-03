@@ -75,6 +75,37 @@ void main() {
     }
   });
 
+  for (final announcement in ['{', '{"url":"ws://127.0.0.1:1"}']) {
+    test(
+      'malformed READY $announcement reaps its owned harness process',
+      () async {
+        final process = await Process.start(
+          Platform.environment['CCPOCKET_NODE'] ?? 'node',
+          [
+            '-e',
+            'console.log(${jsonEncode('READY $announcement')});'
+                'setInterval(() => {}, 1000)',
+          ],
+        );
+        var exited = false;
+        try {
+          await expectLater(
+            _waitForOwnedHarnessReady(process),
+            throwsA(isA<FormatException>()),
+          );
+          final exit = await process.exitCode.timeout(
+            const Duration(seconds: 1),
+          );
+          exited = true;
+          expect(exit, isNot(0));
+        } finally {
+          if (!exited) process.kill(ProcessSignal.sigterm);
+          await process.exitCode.timeout(const Duration(seconds: 2));
+        }
+      },
+    );
+  }
+
   testWidgets(
     'real authority committed before page observation releases a pending overlay once',
     (tester) async {

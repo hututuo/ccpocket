@@ -1756,3 +1756,16 @@ wrapper对自己传入的Process发送SIGTERM并等待exit；10秒仍未退出�
 caller在READY失败时关闭自己的control stream；已退出的失败测试不再次发送kill。
 receiver的原15秒READY、10秒业务等待与90秒总期限不变，清理合同另用100ms模拟未发READY。
 下一步固定这份测试输入，重跑两项新增用例/原七黑盒/60项权限终态队列保护与静态格式，复核P2关闭。
+
+## E071 — READY超时清理通过，协议解析失败也纳入同一owned出口
+
+`3eef3b15c9544731a1b8630472c143029583cc18` clean：
+`c1f-final-owned-receivers-and-authority-contracts` 69 PASS，0 / 35.235秒；
+目标analyze无诊断，0 / 16.209秒；format单文件0 changed，0 / 0.467秒。
+最终轨迹的匹配status sequence38先于overlay39；原三个黑盒文件及harness_ready helper blob未变，
+producer snapshot/wire/SQL/page核对见c1f-final-owned-wire-sql-page-audit.json。
+
+独立窄review确认无READY超时的P2已关闭，无新增产品问题；另指出READY文本解析及必需字段cast仍在主finally前。
+因此将格式错误/缺字段也纳入同一owned startup出口，不扩大生产或公共helper范围。
+先增加两个真实Node合同：不合法JSON与合法JSON但缺必需字段；收到READY后仍keepalive，
+预期FormatException且owned child已退出。red时测试finally兜底清自己的process；根审实现后再固定验证。
