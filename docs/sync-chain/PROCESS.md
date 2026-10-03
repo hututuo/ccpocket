@@ -1707,6 +1707,8 @@ Root拥有测试与最终判断。测试及策略接受此时NOT_RUN，不能把
 仅修fixture启动屏障：在start发送前同时订阅原session_list与Bridge system/init事件，
 等待两者并断言init的真实runtime ID与handle一致；原10秒deadline、业务输入、pending/权限/单条呈现断言保留。
 同时为control失败与receiver失败保留真实诊断，测试之外产品/Bridge/依赖均不变。修正输入尚待重新验证。
+初始化屏障 checkpoint `f2aae706` 后，另将control与overlay等待共同join：任一路失败也有原错误接受者，
+避免finally关闭stream时悬挂的firstWhere报告额外No element；两条既有deadline及断言不变。
 
 独立producer梳理发现同public runtime ID的process replacement可轮换opaque authority，
 因此不能仅凭本地binding是否变化判断R47。此事实与最小组合gate将写入QUEUE-AUTHORITY-ENTRY；

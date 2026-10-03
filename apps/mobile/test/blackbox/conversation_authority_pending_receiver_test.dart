@@ -236,8 +236,11 @@ void main() {
                       message.message.id == 'assistant-authority-pending';
                 })
                 .timeout(const Duration(seconds: 10));
-            await emitSegment();
-            final overlay = await overlayFuture;
+            final delivered = await Future.wait<Object>([
+              emitSegment().then((_) => true),
+              overlayFuture,
+            ]);
+            final overlay = delivered[1] as ConversationSyncV2EventMessage;
             await Future<void>.delayed(Duration.zero);
             await waitForProjection(() {
               final status =
