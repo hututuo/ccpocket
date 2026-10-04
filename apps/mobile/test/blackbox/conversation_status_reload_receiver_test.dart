@@ -330,6 +330,7 @@ void main() {
                         }) ==
                         true,
                   )
+                  .then((window) => window!)
                   .timeout(const Duration(seconds: 10));
               final delivered = await Future.wait<Object>([
                 control('emit_segment', {

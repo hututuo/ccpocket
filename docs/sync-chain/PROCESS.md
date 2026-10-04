@@ -2090,3 +2090,5 @@ deffcdd4的c1j-real-and-public-lifecycle-red：6 PASS / 4 FAIL，1 / 7.142秒；
 两条receiver尚未到retry便失败：一条读到同authority但SQL重读后的无票map，另一条map比SQL实际后续observedAt早15ms。
 这证明原authority匹配屏障不等于完整提交完成；不把这两项记为恢复产品red。补原completed通知屏障，要求SQL已含实际item并且map拥有live receipt后再取快照。
 完整旧日志保留，不改observedAt/JSON断言/生产代码来制造相等。
+5e4c97b8的c1j-corrected-real-and-public-red另有receiver编译FAIL：新completed屏障返回nullable window，不能放入Future<Object>；公开6/2不变。
+修正已经过non-null语义predicate的window类型收窄，未改业务断言/期限；该编译FAIL不是运行时产品red。
