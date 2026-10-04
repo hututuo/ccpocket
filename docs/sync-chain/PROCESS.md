@@ -2116,3 +2116,15 @@ cefadf96的c1j-final-valid-pre-fix-red总6/4，1 / 7.262秒；两个receiver已�
 到cached重建才失败：原Updater用context.read绑定应用长期SessionList，测试直接替换实例却保留旧observer，不能据此声称SQL无票未投影是产品缺陷。
 缓存consumer重建同时重建原Updater observer，但保留同一个ChatSessionCubit/已提交canonical；不再宣称跨SessionList生命周期仍同Updater state。
 实际replacement前后原Updater state相同的断言仍保留。DB close/reopen使用关闭连接前保存的实际target，避免disconnect清身份影响SQL分区读取。
+
+## E089 — 正确合同8/2 red与原duplicate接纳窄修
+
+固定017b8bf1的c1j-validated-pre-fix-lifecycle为8 PASS / 2 FAIL，1 / 7.212秒：真实两个receiver通过完整生命周期；
+公开八项是6/2，失败仅“严格后继相同business receipt”和“同source新sub低seq相同business receipt”不能恢复suspend撤掉的lease。
+根因是original status duplicate分支只更新receipt/flush便return，却没有重建已撤销的authority字段；有效新receipt已过原source/runtime/loaded/authoritative和旧同stream序号拒绝。
+这份有效red与 earlier身份/编译/屏障/假设FAIL分开保存；不声称实际resume重放了不存在的status，也不声称缺票缓存能证明equal-clock旧消息。
+
+只改ChatSessionCubit原duplicate快路：owner仍投影或receipt缺失时保持原duplicate行为；owner已撤销且有有效新receipt则沿原完整接纳重建lease。
+原旧同streamreceipt拒绝、null/source/runtime reset、缓存无票重复只读、exact authority先apply及保守旧/未来queue规则均不改。
+没有新store/map/queue、DB/wire/Service/SessionList/Updater/Bridge/预算变化；结构迁移不混入故障修复。
+固定新输入后运行原83项及本次10项（93组合）、完整Mobile/analyze/format和只读固定源码复核；Bridge按精确未变输入继承，不伪称重跑。

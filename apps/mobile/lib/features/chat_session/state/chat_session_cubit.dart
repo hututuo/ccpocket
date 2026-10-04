@@ -2387,9 +2387,13 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
       status.runtimeSessionId ?? '',
     ].join('\u0000');
     if (previousObservedAt == observedAt &&
-        signature == _detachedProviderStatusSignature) {
+        signature == _detachedProviderStatusSignature &&
+        (_detachedAuthorityObserved || receipt == null)) {
       // A later SQL commit can provide new order without changing business
-      // status. Missing receipt clears this local proof conservatively.
+      // status. Missing receipt clears this local proof conservatively and
+      // cannot rebuild a withdrawn authority lease. A valid fresh receipt
+      // after suspension must reapply the owner below even for identical
+      // business status; old same-subscription receipts were rejected above.
       _detachedProviderStatusCommitReceipt = receipt;
       _flushPendingDetachedRuntimeOverlays();
       return;
