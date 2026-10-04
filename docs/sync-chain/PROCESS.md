@@ -2112,3 +2112,7 @@ d3fc4c9e的c1j-valid-contracts-red仅公开6/2实际执行；receiver诊断调�
 两receiver随后canonical断言失败是初始Widget合同用错：原Updater首次挂载不重写history，要求revision/messages已由Cubit构造器初始化；
 测试却用初始user构造Cubit，首次挂载含assistant的新revision，显示的是overlay而非已接替canonical。
 修正为先挂实际initial SQL window，再以原didUpdateWidget处理actual canonical新revision，并断言overlay0；保留原日志，未改产品canonical路径。
+cefadf96的c1j-final-valid-pre-fix-red总6/4，1 / 7.262秒；两个receiver已通过same-source resume、actual低seq replacement及canonical单次，
+到cached重建才失败：原Updater用context.read绑定应用长期SessionList，测试直接替换实例却保留旧observer，不能据此声称SQL无票未投影是产品缺陷。
+缓存consumer重建同时重建原Updater observer，但保留同一个ChatSessionCubit/已提交canonical；不再宣称跨SessionList生命周期仍同Updater state。
+实际replacement前后原Updater state相同的断言仍保留。DB close/reopen使用关闭连接前保存的实际target，避免disconnect清身份影响SQL分区读取。

@@ -482,6 +482,10 @@ void main() {
               // Recreate the original SessionList consumer on the same SQL
               // partition. Its constructor actually reloads cached status;
               // same-target session_list notifications alone skip that reload.
+              // The Updater binds the app's long-lived SessionList through
+              // context.read, so recreating that consumer also recreates its
+              // observer. The detached Cubit and its canonical history survive.
+              await tester.pumpWidget(const SizedBox.shrink());
               final previousList = sessionList;
               sessionList = SessionListCubit(
                 bridge: bridge,
@@ -502,7 +506,7 @@ void main() {
                 await mount(canonical, runtime.id);
                 expect(
                   tester.state(find.byType(DurableSessionPreviewUpdater)),
-                  same(mounted),
+                  isNot(same(mounted)),
                 );
                 expect(
                   chat.diagnosticRuntimeProjection['statusCommitSequence'],
@@ -524,6 +528,7 @@ void main() {
               await tester.pumpWidget(const SizedBox.shrink());
               await sessionList.close();
               await sync.dispose();
+              final persistedTarget = target();
               bridge.disconnect();
               await repository.close();
               final reopened = SessionCatalogCacheRepository(
@@ -534,7 +539,7 @@ void main() {
               );
               try {
                 final cached = await reopened.loadConversationStatus(
-                  target: target(),
+                  target: persistedTarget,
                   provider: 'codex',
                   providerSessionId: threadId,
                 );
