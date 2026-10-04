@@ -8,7 +8,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 import 'chat_session_cubit_test.dart' show MockBridgeService;
 
-const _source = 'lifecycle-bridge/lifecycle-source';
+const _source = 'bridge-a/source-a';
 const _time = '2026-10-04T00:00:01.000Z';
 const _subscription = 'lifecycle-subscription';
 
@@ -67,6 +67,12 @@ void main() {
       streamingCubit: streaming,
       detachedPreview: true,
       initialLiveRuntimeSessionId: 'lifecycle-runtime',
+      initialHistoryMessages: const [
+        UserInputMessage(
+          text: 'Canonical user',
+          providerItemId: 'lifecycle-user',
+        ),
+      ],
       detachedRuntimeOverlayStream: overlays.stream,
     );
   });
@@ -84,8 +90,8 @@ void main() {
         ConversationSyncV2EventMessage(
           event: ConversationSyncV2EventKind.runtimeOverlay,
           subscriptionId: sub,
-          bridgeInstanceId: 'lifecycle-bridge',
-          codexSourceId: 'lifecycle-source',
+          bridgeInstanceId: 'bridge-a',
+          codexSourceId: 'source-a',
           batchId: 'lifecycle-batch',
           sequence: sequence,
           provider: 'codex',

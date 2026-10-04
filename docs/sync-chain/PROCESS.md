@@ -2067,3 +2067,21 @@ root梳理原Cubit接纳；GPT-6 Luna/max只读调查Service/SessionList接点�
 允许新增有界Mobile合同/测试设施；若原owner确有red，只窄改ChatSessionCubit原接纳分支，不改DB/wire/schema/Bridge生产/预算或新造queue。
 执行顺序：合同/过程冻结→实际red取证→窄修→固定输入组合回归、全量Mobile/analyze/format、只读独立复核→文档/rollback。
 缓存/订阅合同与真实Provider/设备/运行服务验收分别登记；R47完整策略、R45/R49和历史未知不借此关闭。
+
+## E087 — 初次合同输入错误保留与真实receiver设施冻结
+
+公开合同首输入c2548ff1：c1j-public-lifecycle-red为3 PASS / 5 FAIL，1 / 21.316秒，完整原日志保留。
+其中三个queue失败是fixture身份错误：新event写lifecycle-bridge/source，但复用MockBridge实际默认bridge-a/source-a，
+原入口先按真实Bridge identity拒绝事件，不能当产品pending缺陷。纠正到实际mock identity，并补与既有合同相同的canonical user初始事实，未改产品/预期/期限。
+另两项“later identical receipt”和“new-sub低序号”恢复失败位于公开status接点；尚需真实原链实证，不从这份混合red单独关闭定位。
+
+只读调查确认：SQL不保留receipt；实时statusChanges原对象保留票，cache reload wholesale替换map；
+同source retry递增generation/停旧sub，新started保留旧map。Service当前target/source/generation/sub fence拒旧wire，
+因此页面保留旧事实不等于旧sub仍可输入。消费者没有reactive active-sub字段，跨sub顺序不能猜测。
+普通same-target session_list listener会被_lastCacheLoadFingerprint早退，不能用requestSessionList冒充SQL重读。
+
+新增两条真实receiver：原stdio Provider/Bridge/Service/SQLite/SessionList/Updater先建立当前事实；
+分别正常/公开suspend后真实retryBootstrap，等待SQL commit后的新sub receipt，要求真实business JSON完全相等且低seq仍恢复。
+通过新建原SessionList消费者触发真实SQL cached-only读取，在同一Updater state/Cubit验证无票和canonical单次，
+停掉拥有的receiver工作后原DB close/reopen再次验证无票。新建consumer不是模拟强制reload，不对未发生的reset路径作结论。
+没有更改wire/时间/authority/Service或私有commit/send；若真实Bridge改变业务状态，该“identical”证据断言会失败并单独诊断，不能伪造时间以凑red。
