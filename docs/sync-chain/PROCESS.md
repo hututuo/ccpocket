@@ -2092,3 +2092,17 @@ deffcdd4的c1j-real-and-public-lifecycle-red：6 PASS / 4 FAIL，1 / 7.142秒；
 完整旧日志保留，不改observedAt/JSON断言/生产代码来制造相等。
 5e4c97b8的c1j-corrected-real-and-public-red另有receiver编译FAIL：新completed屏障返回nullable window，不能放入Future<Object>；公开6/2不变。
 修正已经过non-null语义predicate的window类型收窄，未改业务断言/期限；该编译FAIL不是运行时产品red。
+
+## E088 — 真实resume行为纠正了“必有新status”假设
+
+c6da0adf的c1j-joined-real-and-public-red：公开6 PASS / 2 FAIL不变；两条receiver分别在初始map必须有票、retry必须给新票处超时，总6/4，1 / 27.715秒。
+原trace显示SQLite/canonical已完成，但原SessionList异步cache重读可移除live map receipt；同源retry请求携带statusState，
+真实Bridge新sub完成resume却未重发未变化status。不能因source相同或new syncBegin就虚构一次status commit，更不能把该timeout当产品恢复red。
+E086/E087中“新sub必有相同业务status”的计划假设已被实际协议行为否定；保留原失败，改写真实合同的正确预期。
+
+真实两窗口改为：初始status可以来自真实cached map；同源resume complete无status replay时保留原事实，
+正常lease保持；已公开suspend的lease继续只读。随后原SessionManager真实同public ID replacement取得新UUID，
+新sub低seq的actual新authority status SQL提交后才恢复owner；同一Updater/canonical/SQL cached reread及close/reopen继续核对。
+不要求旧receipt留存必清、不要求缓存必有票，也不由跨sub低seq推出先后。
+公开“两种有效新receipt恢复相同business signature”仍是原Service可发布的合法消费接点合同，但本条Bridge resume并未生产该重复status。
+它与实际Bridge合同分层；如果窄修，只声明该有效新receipt分支修复，不宣称resume无status便恢复权限或已证明全部producer重复路径。

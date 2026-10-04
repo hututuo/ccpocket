@@ -347,12 +347,10 @@ void main() {
                 final current =
                     sessionList.conversationStatuses['codex\u0000$threadId'];
                 return current?.authorityGeneration ==
-                        event.authorityGeneration &&
-                    current?.commitReceipt != null;
+                    event.authorityGeneration;
               });
               final live =
                   sessionList.conversationStatuses['codex\u0000$threadId']!;
-              expect(live.commitReceipt, isNotNull);
               final stored = await repository.loadConversationStatus(
                 target: target(),
                 provider: 'codex',
@@ -369,8 +367,8 @@ void main() {
               trace.add({
                 'stage': 'live-commit-and-sql-receiptless',
                 'status': live.toJson(),
-                'receiptSubscription': live.commitReceipt!.subscriptionId,
-                'receiptSequence': live.commitReceipt!.sequence,
+                'receiptSubscription': live.commitReceipt?.subscriptionId,
+                'receiptSequence': live.commitReceipt?.sequence,
                 'runtimeProjection': chat.diagnosticRuntimeProjection,
               });
               if (suspendBeforeRetry) {
@@ -382,7 +380,17 @@ void main() {
                 expect(chat.canMutateAttachedRuntime, isFalse);
                 expect(chat.state.status, ProcessStatus.running);
               }
+              final resumed = sync.syncUpdates
+                  .firstWhere(
+                    (update) =>
+                        update.kind ==
+                        ConversationSyncCacheUpdateKind.completed,
+                  )
+                  .timeout(const Duration(seconds: 10));
+              final retryStatusCommits = <ConversationSyncCacheUpdate>[];
               final lifecycleObserver = sync.syncUpdates.listen((update) {
+                if (update.kind == ConversationSyncCacheUpdateKind.status)
+                  retryStatusCommits.add(update);
                 if (update.kind == ConversationSyncCacheUpdateKind.started) {
                   final projected =
                       sessionList.conversationStatuses['codex\u0000$threadId'];
@@ -403,37 +411,51 @@ void main() {
                   sync.retryBootstrap(reason: 'receiver_same_source_retry'),
                   isTrue,
                 );
-                await waitForProjection(() {
-                  final receipt = sessionList
-                      .conversationStatuses['codex\u0000$threadId']
-                      ?.commitReceipt;
-                  return receipt != null &&
-                      receipt.subscriptionId !=
-                          live.commitReceipt!.subscriptionId;
+                await resumed;
+                await tester.pump();
+                final retained =
+                    sessionList.conversationStatuses['codex\u0000$threadId']!;
+                expect(retained.toJson(), live.toJson());
+                expect(retryStatusCommits, isEmpty);
+                expect(chat.canMutateAttachedRuntime, !suspendBeforeRetry);
+                final newSubscription = sync
+                    .diagnosticSnapshot()['activeSubscriptionId'];
+                expect(newSubscription, isNot(event.subscriptionId));
+                trace.add({
+                  'stage': 'same-source-resume-without-status-replay',
+                  'subscription': newSubscription,
+                  'oldSubscription': event.subscriptionId,
+                  'status': retained.toJson(),
+                  'statusCommits': retryStatusCommits.length,
+                  'runtimeProjection': chat.diagnosticRuntimeProjection,
                 });
               } finally {
                 await lifecycleObserver.cancel();
               }
+              // An actual same-public-ID process replacement provides new
+              // authority facts. No cross-subscription sequence comparison is
+              // used by the page to obtain that current owner.
+              final replaced = await control('replace_runtime');
+              expect(replaced['runtimeId'], runtime.id);
+              expect(replaced['oldAuthority'], live.authorityGeneration);
+              expect(replaced['newAuthority'], isNot(live.authorityGeneration));
+              await waitForProjection(() {
+                final current =
+                    sessionList.conversationStatuses['codex\u0000$threadId'];
+                return current?.authorityGeneration ==
+                        replaced['newAuthority'] &&
+                    current?.commitReceipt != null;
+              });
               final fresh =
                   sessionList.conversationStatuses['codex\u0000$threadId']!;
-              // No Provider state changed: the real Bridge reissues the same
-              // business status on the new subscription after real SQL commit.
-              expect(fresh.toJson(), live.toJson());
-              expect(
-                fresh.commitReceipt!.sourceFingerprint,
-                live.commitReceipt!.sourceFingerprint,
-              );
               expect(
                 fresh.commitReceipt!.subscriptionId,
-                isNot(live.commitReceipt!.subscriptionId),
+                isNot(event.subscriptionId),
               );
-              expect(
-                fresh.commitReceipt!.sequence,
-                lessThan(live.commitReceipt!.sequence),
-              );
+              expect(fresh.commitReceipt!.sequence, lessThan(event.sequence));
               await tester.pump();
               trace.add({
-                'stage': 'new-subscription-identical-status-committed',
+                'stage': 'actual-new-authority-on-new-subscription',
                 'status': fresh.toJson(),
                 'receiptSubscription': fresh.commitReceipt!.subscriptionId,
                 'receiptSequence': fresh.commitReceipt!.sequence,
@@ -442,7 +464,7 @@ void main() {
               expect(chat.canMutateAttachedRuntime, isTrue);
               expect(
                 chat.diagnosticRuntimeProjection['authorityGeneration'],
-                live.authorityGeneration,
+                replaced['newAuthority'],
               );
               expect(
                 tester.state(find.byType(DurableSessionPreviewUpdater)),
