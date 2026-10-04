@@ -2106,3 +2106,5 @@ E086/E087中“新sub必有相同业务status”的计划假设已被实际协�
 不要求旧receipt留存必清、不要求缓存必有票，也不由跨sub低seq推出先后。
 公开“两种有效新receipt恢复相同business signature”仍是原Service可发布的合法消费接点合同，但本条Bridge resume并未生产该重复status。
 它与实际Bridge合同分层；如果窄修，只声明该有效新receipt分支修复，不宣称resume无status便恢复权限或已证明全部producer重复路径。
+d3fc4c9e的c1j-valid-contracts-red仅公开6/2实际执行；receiver诊断调用漏了required provider/thread，编译FAIL，总6/3，1 / 4.772秒。
+修正诊断参数；不把编译计数当receiver运行失败，待真正运行后再登记接受证据。

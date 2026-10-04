@@ -418,8 +418,10 @@ void main() {
                 expect(retained.toJson(), live.toJson());
                 expect(retryStatusCommits, isEmpty);
                 expect(chat.canMutateAttachedRuntime, !suspendBeforeRetry);
-                final newSubscription = sync
-                    .diagnosticSnapshot()['activeSubscriptionId'];
+                final newSubscription = sync.diagnosticSnapshot(
+                  provider: 'codex',
+                  providerSessionId: threadId,
+                )['activeSubscriptionId'];
                 expect(newSubscription, isNot(event.subscriptionId));
                 trace.add({
                   'stage': 'same-source-resume-without-status-replay',
