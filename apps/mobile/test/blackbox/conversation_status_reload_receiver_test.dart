@@ -308,6 +308,29 @@ void main() {
                     .toList(growable: false),
                 detachedRuntimeOverlayStream: sync.runtimeOverlays,
               );
+              final itemSyncCompleted = sync.syncUpdates
+                  .where(
+                    (update) =>
+                        update.kind ==
+                        ConversationSyncCacheUpdateKind.completed,
+                  )
+                  .asyncMap(
+                    (_) => repository.loadConversationWindow(
+                      target: target(),
+                      provider: 'codex',
+                      providerSessionId: threadId,
+                    ),
+                  )
+                  .firstWhere(
+                    (window) =>
+                        window?.entries.any((entry) {
+                          final message = entry.decodeMessage();
+                          return message is AssistantServerMessage &&
+                              message.message.id == 'assistant-status-reload';
+                        }) ==
+                        true,
+                  )
+                  .timeout(const Duration(seconds: 10));
               final delivered = await Future.wait<Object>([
                 control('emit_segment', {
                   'id': 'assistant-status-reload',
@@ -315,16 +338,17 @@ void main() {
                 }),
                 overlayFor('assistant-status-reload'),
                 canonicalContaining('assistant-status-reload'),
+                itemSyncCompleted,
               ]);
               final event = delivered[1] as ConversationSyncV2EventMessage;
               final canonical = delivered[2] as ConversationHotWindowSnapshot;
-              await waitForProjection(
-                () =>
-                    sessionList
-                        .conversationStatuses['codex\u0000$threadId']
-                        ?.authorityGeneration ==
-                    event.authorityGeneration,
-              );
+              await waitForProjection(() {
+                final current =
+                    sessionList.conversationStatuses['codex\u0000$threadId'];
+                return current?.authorityGeneration ==
+                        event.authorityGeneration &&
+                    current?.commitReceipt != null;
+              });
               final live =
                   sessionList.conversationStatuses['codex\u0000$threadId']!;
               expect(live.commitReceipt, isNotNull);

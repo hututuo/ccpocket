@@ -2085,3 +2085,8 @@ root梳理原Cubit接纳；GPT-6 Luna/max只读调查Service/SessionList接点�
 通过新建原SessionList消费者触发真实SQL cached-only读取，在同一Updater state/Cubit验证无票和canonical单次，
 停掉拥有的receiver工作后原DB close/reopen再次验证无票。新建consumer不是模拟强制reload，不对未发生的reset路径作结论。
 没有更改wire/时间/authority/Service或私有commit/send；若真实Bridge改变业务状态，该“identical”证据断言会失败并单独诊断，不能伪造时间以凑red。
+
+deffcdd4的c1j-real-and-public-lifecycle-red：6 PASS / 4 FAIL，1 / 7.142秒；公开八项已是6/2，三个身份错误队列合同纠正后通过。
+两条receiver尚未到retry便失败：一条读到同authority但SQL重读后的无票map，另一条map比SQL实际后续observedAt早15ms。
+这证明原authority匹配屏障不等于完整提交完成；不把这两项记为恢复产品red。补原completed通知屏障，要求SQL已含实际item并且map拥有live receipt后再取快照。
+完整旧日志保留，不改observedAt/JSON断言/生产代码来制造相等。
