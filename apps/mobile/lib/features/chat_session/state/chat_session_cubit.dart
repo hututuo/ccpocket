@@ -2390,8 +2390,8 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
         signature == _detachedProviderStatusSignature &&
         (_detachedAuthorityObserved || receipt == null)) {
       // A later SQL commit can provide new order without changing business
-      // status. Missing receipt clears this local proof conservatively and
-      // cannot rebuild a withdrawn authority lease. A valid fresh receipt
+      // status. An identical status without a receipt clears this local proof
+      // conservatively and cannot rebuild a withdrawn authority lease. A fresh receipt
       // after suspension must reapply the owner below even for identical
       // business status; old same-subscription receipts were rejected above.
       _detachedProviderStatusCommitReceipt = receipt;

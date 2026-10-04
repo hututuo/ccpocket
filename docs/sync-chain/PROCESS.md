@@ -2128,3 +2128,16 @@ cefadf96的c1j-final-valid-pre-fix-red总6/4，1 / 7.262秒；两个receiver已�
 原旧同streamreceipt拒绝、null/source/runtime reset、缓存无票重复只读、exact authority先apply及保守旧/未来queue规则均不改。
 没有新store/map/queue、DB/wire/Service/SessionList/Updater/Bridge/预算变化；结构迁移不混入故障修复。
 固定新输入后运行原83项及本次10项（93组合）、完整Mobile/analyze/format和只读固定源码复核；Bridge按精确未变输入继承，不伪称重跑。
+
+## E090 — 93首跑失败的真实reset屏障及固定源码复核
+
+ad3126cf的c1j-final-selected-93为92 PASS / 1 FAIL，1 / 44.974秒；原83与新增八项公开合同全部green。
+唯一失败在新true receiver重订阅前单次SQL stored!：实际trace有原scope:status sync_reset/state_unavailable及随后status_changes，
+原map保持已知事实期间SQL可暂删行。不是duplicate修复失败，也不以再跑green解释原因；保留本次FAIL/trace。
+测试观察接点收紧为：先监听原syncUpdates，再实际SQL读取，等待SQL与SessionList当前status完整JSON一致且actual authority匹配，
+返回同一对不可变样本给下游；reset间隙只继续等真实提交通知。10秒原上限不变，不轮询睡眠/改wire/数据库/生产顺序。
+
+固定ad3126cf GPT-6 Luna/max只读复核无新增可证P0–P2，未测试/改文件；独立指出同一个SQL屏障问题，root据实际trace修测试设施。
+复核范围澄清：无receipt且完全相同business/observedAt仍不能重建已撤lease；无票但signature/时间改变仍沿既有完整接纳，
+本delta没改变该路径，不能泛称所有缓存无票不可恢复。源码注释只澄清范围；若要扩大策略，下一批先建立独立合同。
+固定后续输入再跑最终93/全量/静态/格式并复查新观察helper；旧固定review归其原输入，不冒充后续fixture已审。

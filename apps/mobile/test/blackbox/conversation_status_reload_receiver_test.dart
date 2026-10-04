@@ -174,6 +174,45 @@ void main() {
                   .timeout(const Duration(seconds: 10));
             }
 
+            Future<
+              ({ConversationSyncV2Status sql, ConversationSyncV2Status catalog})
+            >
+            committedStatus(String authority) async {
+              final changes = StreamController<void>();
+              final observer = sync.syncUpdates.listen(
+                (_) => changes.add(null),
+              );
+              final result = changes.stream
+                  .asyncMap((_) async {
+                    final sql = await repository.loadConversationStatus(
+                      target: target(),
+                      provider: 'codex',
+                      providerSessionId: threadId,
+                    );
+                    final catalog = sessionList
+                        .conversationStatuses['codex\u0000$threadId'];
+                    if (sql == null ||
+                        catalog == null ||
+                        sql.authorityGeneration != authority ||
+                        jsonEncode(sql.toJson()) !=
+                            jsonEncode(catalog.toJson()))
+                      return null;
+                    return (sql: sql, catalog: catalog);
+                  })
+                  .firstWhere((sample) => sample != null)
+                  .then((sample) => sample!)
+                  .timeout(const Duration(seconds: 10));
+              // Listen before the first real SQL read so a reset/commit between
+              // samples cannot strand the observer behind a missed notification.
+              changes.add(null);
+              try {
+                return await result;
+              } finally {
+                await observer.cancel();
+                await changes.close();
+              }
+            }
+
             List<String> assistantIds() => chat!.visibleEntries
                 .whereType<ServerChatEntry>()
                 .map((entry) => entry.message)
@@ -347,20 +386,10 @@ void main() {
               ]);
               final event = delivered[1] as ConversationSyncV2EventMessage;
               final canonical = delivered[2] as ConversationHotWindowSnapshot;
-              await waitForProjection(() {
-                final current =
-                    sessionList.conversationStatuses['codex\u0000$threadId'];
-                return current?.authorityGeneration ==
-                    event.authorityGeneration;
-              });
-              final live =
-                  sessionList.conversationStatuses['codex\u0000$threadId']!;
-              final stored = await repository.loadConversationStatus(
-                target: target(),
-                provider: 'codex',
-                providerSessionId: threadId,
-              );
-              expect(stored!.toJson(), live.toJson());
+              final sample = await committedStatus(event.authorityGeneration!);
+              final live = sample.catalog;
+              final stored = sample.sql;
+              expect(stored.toJson(), live.toJson());
               expect(stored.commitReceipt, isNull);
               await mount(canonical, runtime.id);
               final mounted = tester.state(
