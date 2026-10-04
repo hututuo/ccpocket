@@ -2,7 +2,7 @@
 
 ## 当前断点
 
-- 时间：2026-10-03（Asia/Shanghai；此前条目保留当时记录）。
+- 时间：2026-10-04（Asia/Shanghai；此前条目保留当时记录）。
 - 分支：`codex/sync-chain-extraction-20261001`；仅隔离worktree本地提交。
 - 起始SHA：`930f1267e949c6cf2095761cc71c43cca08c6dc3`。
 - 阶段：A0–A3/B1、B2、C1a–C1i的选定接缝已完成源码门禁；C1h关闭真实消费/commit顺序R54/R55，C1i补原overlay自身await-after replacement的生产证明R56，未改产品。
@@ -2050,3 +2050,20 @@ R56接受的是原overlay自身await-after replacement；C1g catalog/R54 Mobile 
 R47的无receipt cached-only/跨订阅与未来authority完整策略仍未接受，下一C1j先建立真实缓存重读/订阅替换合同，缺票不得虚构跨stream顺序。
 R45/R49、历史R29/095cab00/R53直接原因继续开放；真实Provider/设备/生产/云CI/OTA/签名安装/发布NOT_RUN，原生UI BLOCKED。
 本批产品未改，只在隔离分支本地提交测试/文档；原项目/修复checkout不操作，未merge/push/部署。
+
+## E086 — C1j缓存重读、同源订阅与projection恢复的有界计划
+
+父断点1783611b clean；C1h Mobile产品/测试4e6d3d4a与C1i Bridge测试d67c8b92的历史门禁保留。
+先证明原Repository SQL close/reopen不保存本地receipt，原SessionList cache reload会用无receipt status重建map，
+同source retryBootstrap/new subscription保留旧map但旧wire须在原Service fence拒绝。
+seq只在同source/subscription内比较；无票或跨订阅equal-clock不构成旧authority证明，future event仍须等待精确owner。
+
+root梳理原Cubit接纳；GPT-6 Luna/max只读调查Service/SessionList接点，未改文件/跑测试。
+额外发现待验证接点：suspend撤lease却保留business signature；严格后继的合法receipt遇相同status可能duplicate早退，
+不能仅由代码猜测缺陷。先冻结公开合同与真实SQL/Service/SessionList/Updater生命周期证据，保留实际red及其正确预期来源。
+重复/旧receipt与无receipt cached重复不能独自恢复已撤销lease；真正当前提交的更晚receipt应可恢复原owner。
+新订阅序号重新从低值开始时不能套用旧订阅大小比较，不能按UUID排序或放宽isAfter到>=。
+
+允许新增有界Mobile合同/测试设施；若原owner确有red，只窄改ChatSessionCubit原接纳分支，不改DB/wire/schema/Bridge生产/预算或新造queue。
+执行顺序：合同/过程冻结→实际red取证→窄修→固定输入组合回归、全量Mobile/analyze/format、只读独立复核→文档/rollback。
+缓存/订阅合同与真实Provider/设备/运行服务验收分别登记；R47完整策略、R45/R49和历史未知不借此关闭。
