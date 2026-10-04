@@ -308,6 +308,10 @@ void main() {
                     .toList(growable: false),
                 detachedRuntimeOverlayStream: sync.runtimeOverlays,
               );
+              // The real Updater expects its first revision to match the
+              // Cubit's constructor history; subsequent revisions apply via
+              // didUpdateWidget. Mount that actual initial SQL window first.
+              await mount(initial, runtime.id);
               final itemSyncCompleted = sync.syncUpdates
                   .where(
                     (update) =>
@@ -364,6 +368,7 @@ void main() {
               );
               expect(chat!.canMutateAttachedRuntime, isTrue);
               expect(assistantIds(), ['assistant-status-reload']);
+              expect(projection()['runtimeOverlayCount'], 0);
               trace.add({
                 'stage': 'live-commit-and-sql-receiptless',
                 'status': live.toJson(),

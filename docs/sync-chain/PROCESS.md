@@ -2108,3 +2108,7 @@ E086/E087中“新sub必有相同业务status”的计划假设已被实际协�
 它与实际Bridge合同分层；如果窄修，只声明该有效新receipt分支修复，不宣称resume无status便恢复权限或已证明全部producer重复路径。
 d3fc4c9e的c1j-valid-contracts-red仅公开6/2实际执行；receiver诊断调用漏了required provider/thread，编译FAIL，总6/3，1 / 4.772秒。
 修正诊断参数；不把编译计数当receiver运行失败，待真正运行后再登记接受证据。
+23af44b7的c1j-actual-resume-contracts-red总6/4，1 / 6.625秒；真实resume无status与actual replacement低seq/恢复断言已到达，
+两receiver随后canonical断言失败是初始Widget合同用错：原Updater首次挂载不重写history，要求revision/messages已由Cubit构造器初始化；
+测试却用初始user构造Cubit，首次挂载含assistant的新revision，显示的是overlay而非已接替canonical。
+修正为先挂实际initial SQL window，再以原didUpdateWidget处理actual canonical新revision，并断言overlay0；保留原日志，未改产品canonical路径。
