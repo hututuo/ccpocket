@@ -14,6 +14,7 @@
     "04-UNIFIED-DOMAIN-AND-DATAFLOW.md",
     "05-CONTENT-AND-PRODUCT-OPERATIONS.md",
     "06-STATE-MACHINES-AND-SEMANTIC-AXES.md",
+    "07-DIGEST-AND-DURABLE-EVENT-ALGEBRA.md",
     "PROCESS-LEDGER.md",
     "drafts/IMPLEMENTATION-VALIDATION-ROLLBACK.md",
     "drafts/KERNEL-CAPABILITY-COMPLETION.md",
@@ -85,6 +86,7 @@
       "id_column": "row_id",
       "row_count": 37,
       "min_columns": 22,
+      "final_exact_columns": 22,
       "required_columns": [
         "row_id",
         "semantic_or_contract",
@@ -109,6 +111,7 @@
         "change_cost",
         "phase1_status"
       ],
+      "final_required_columns": [],
       "id_sequence": [
         {"prefix": "P1-ID-", "start": 1, "end": 9, "width": 3},
         {"prefix": "P1-FN-", "start": 1, "end": 4, "width": 3},
@@ -126,6 +129,7 @@
       "id_column": "mutation_id",
       "row_count": 38,
       "min_columns": 24,
+      "final_exact_columns": 27,
       "required_columns": [
         "mutation_id",
         "typed_variant",
@@ -135,7 +139,6 @@
         "target_identity",
         "offline_policy",
         "admission_fingerprint",
-        "queue_lane",
         "preconditions",
         "delivery_policy",
         "replay_policy",
@@ -152,6 +155,12 @@
         "phase2_remainder",
         "fact_status"
       ],
+      "final_required_columns": [
+        "queue_policy",
+        "queue_lane_selector",
+        "execution_conflict_selector",
+        "scheduling_class"
+      ],
       "id_sequence": [
         {"prefix": "OP-", "start": 1, "end": 39, "width": 3, "exclude": [7]}
       ]
@@ -161,6 +170,7 @@
       "id_column": "capability_id",
       "row_count": 26,
       "min_columns": 19,
+      "final_exact_columns": 23,
       "required_columns": [
         "capability_id",
         "user_visible_effect",
@@ -181,6 +191,12 @@
         "source_presence",
         "runtime_status",
         "root_conflict_or_open_decision"
+      ],
+      "final_required_columns": [
+        "state_machine_refs",
+        "feature_local_state_or_view_projection",
+        "view_projection_only",
+        "projection_derivation"
       ],
       "id_sequence": [
         {"prefix": "K-", "start": 1, "end": 26, "width": 3}
@@ -281,7 +297,7 @@
         {"prefix": "P1-", "start": 1, "end": 10, "width": 2},
         {"prefix": "K-", "start": 1, "end": 26, "width": 3},
         {"prefix": "P-", "start": 1, "end": 26, "width": 3},
-        {"prefix": "D-", "start": 1, "end": 12, "width": 3},
+        {"prefix": "INPUT-D-", "start": 1, "end": 12, "width": 3},
         {"prefix": "U-", "start": 1, "end": 9, "width": 3},
         {"prefix": "UNK-", "start": 1, "end": 14, "width": 3}
       ]
@@ -309,6 +325,101 @@
         {"prefix": "H", "start": 0, "end": 18, "width": 2},
         {"prefix": "D", "start": 0, "end": 8, "width": 2}
       ]
+    },
+    {
+      "path": "drafts/P1-SEMANTIC-DICTIONARY.csv",
+      "dynamic_id_rule": "SEMANTIC_SUCCESSOR_V1",
+      "modes": ["final"],
+      "id_column": "semantic_id",
+      "exact_columns": 26,
+      "min_columns": 26,
+      "required_columns": ["semantic_id", "semantic_kind", "term", "definition", "product_effect", "owner", "authority", "identity_key", "scope_and_fence", "writer", "durability", "ordering", "lifecycle_or_allowed_values", "wire_binding", "storage_binding", "unknown_behavior", "capacity", "error_semantics", "acceptance_vectors", "provenance", "semantic_schema_owner", "ref_minter", "byte_backend_owner", "retention_policy_owner", "ticket_issuer", "status"],
+      "allow_blank_columns": ["semantic_schema_owner", "ref_minter", "byte_backend_owner", "retention_policy_owner", "ticket_issuer"]
+    },
+    {
+      "path": "drafts/P1-MESSAGE-REGISTRY.csv",
+      "dynamic_id_rule": "SUPERSEDED_VIEW_V1",
+      "modes": ["final"],
+      "id_column": "message_kind",
+      "exact_columns": 18,
+      "min_columns": 18,
+      "required_columns": ["message_kind", "semantic_id", "direction", "envelope_class", "capability_semantic_id", "aggregate_scope", "correlates_with", "delivery_class", "payload_shape", "allowed_problem_codes", "evolution_policy", "operation_registry_id", "exposure", "superseded_by", "queue_policy", "queue_lane_family", "execution_conflict_families", "status"],
+      "allow_blank_columns": ["capability_semantic_id", "correlates_with", "allowed_problem_codes", "operation_registry_id", "exposure", "superseded_by", "queue_policy", "queue_lane_family", "execution_conflict_families"]
+    },
+    {
+      "path": "matrices/RISK-REGISTER.csv",
+      "modes": ["final"],
+      "id_column": "risk_id",
+      "row_count": 27,
+      "exact_columns": 11,
+      "min_columns": 11,
+      "required_columns": ["risk_id", "category", "trigger", "impact", "preventive_contract", "detection_evidence", "fail_closed_response", "owner", "gate", "residual_risk", "status"],
+      "id_sequence": [{"prefix": "R-", "start": 1, "end": 27, "width": 3}]
+    },
+    {
+      "path": "matrices/EXPERIMENT-REGISTRY.csv",
+      "modes": ["final"],
+      "id_column": "canonical_id",
+      "row_count": 63,
+      "exact_columns": 12,
+      "min_columns": 12,
+      "required_columns": ["canonical_id", "category", "scope", "aliases", "question", "bound_build_or_source", "method", "positive_acceptance", "negative_acceptance", "raw_evidence_artifact", "blocks", "status"],
+      "id_sequence": [{"prefix": "E-", "start": 1, "end": 63, "width": 3}]
+    },
+    {
+      "path": "matrices/DECISION-LEDGER.csv",
+      "dynamic_id_rule": "DECISION_SUCCESSOR_V1",
+      "modes": ["final"],
+      "id_column": "decision_id",
+      "exact_columns": 13,
+      "min_columns": 13,
+      "required_columns": ["decision_id", "record_kind", "scope", "statement", "status", "owner", "source_authority", "source_refs", "supersedes", "superseded_by", "affected_artifacts", "implementation_gate", "rollback_or_change_rule"]
+    },
+    {
+      "path": "matrices/EVIDENCE-ADJUDICATION.csv",
+      "modes": ["final"],
+      "id_column": "evidence_id",
+      "row_count": 29,
+      "exact_columns": 12,
+      "min_columns": 12,
+      "required_columns": ["evidence_id", "evidence_kind", "subject", "authority_rank", "identity_or_digest", "location", "fact_status", "can_prove", "cannot_prove", "staleness_rule", "required_recheck_gate", "decision_refs"]
+    },
+    {
+      "path": "matrices/AUTHORITY-OWNERSHIP.csv",
+      "dynamic_id_rule": "AUTHORITY_ORDERED_SET_V1",
+      "modes": ["final"],
+      "id_column": "semantic_id",
+      "exact_columns": 14,
+      "min_columns": 14,
+      "required_columns": ["semantic_id", "authoritative_fact_source", "domain_owner", "sole_writer", "execution_location", "storage_namespace", "read_port", "mutation_port", "publication_port", "forbidden_writers", "state_machine_refs", "capability_refs", "negative_vector", "rollback_boundary"]
+    },
+    {
+      "path": "matrices/IMPLEMENTATION-WAVES.csv",
+      "modes": ["final"],
+      "id_column": "stage_id",
+      "row_count": 19,
+      "exact_columns": 17,
+      "min_columns": 17,
+      "required_columns": ["stage_id", "objective", "dependencies", "exact_design_inputs", "target_owners", "target_module_paths", "source_disposition_ids", "enter_gate", "implementation_outputs", "static_checks", "fault_vectors", "runtime_checks", "data_policy", "cutover_scope", "rollback_point", "explicitly_not_authorized", "next_gate"],
+      "id_sequence": [{"prefix": "I", "start": 0, "end": 18, "width": 2}]
+    },
+    {
+      "path": "matrices/DESIGN-CLOSURE.csv",
+      "modes": ["final"],
+      "id_column": "id",
+      "row_count": 112,
+      "exact_columns": 17,
+      "min_columns": 17,
+      "required_columns": ["id", "class", "required_design_artifact", "phase", "closure_rule", "evidence_input", "owner", "expected_failing_test", "current_status", "design_status", "closing_artifacts", "closing_rows_or_sections", "negative_vector", "machine_binding_status", "runtime_status", "remaining_gate", "root_rationale"],
+      "id_sequence": [
+        {"prefix": "P0-", "start": 1, "end": 15, "width": 2},
+        {"prefix": "P1-", "start": 1, "end": 10, "width": 2},
+        {"prefix": "K-", "start": 1, "end": 26, "width": 3},
+        {"prefix": "P-", "start": 1, "end": 26, "width": 3},
+        {"prefix": "INPUT-D-", "start": 1, "end": 12, "width": 3},
+        {"prefix": "U-", "start": 1, "end": 9, "width": 3},
+        {"prefix": "UNK-", "start": 1, "end": 14, "width": 3}
+      ]
     }
   ],
   "source_reference_columns": {
@@ -326,48 +437,55 @@
   ],
   "final": {
     "required_files": [
-      "FULL_DESIGN.md",
+      "07-DIGEST-AND-DURABLE-EVENT-ALGEBRA.md",
+      "drafts/FULL-DESIGN-SYNTHESIS.md",
+      "evidence/I01-UPSTREAM-HOST-INTEGRATION-MAP.md",
       "contracts/contract-registry.json",
-      "contracts/sql/negative-vectors.json",
-      "matrices/RISK_REGISTER.csv",
-      "matrices/EXPERIMENT-AND-GATE-MATRIX.csv",
-      "matrices/AUDIT-COVERAGE-CLOSURE.csv"
+      "contracts/CONTRACT-MANIFEST.json",
+      "contracts/README.md",
+      "contracts/tools/validate_contract.py",
+      "contracts/vectors/contract-vectors.json",
+      "contracts/sql/bridge-v1.sql",
+      "contracts/sql/mobile-v1.sql",
+      "drafts/P1-SEMANTIC-DICTIONARY.csv",
+      "drafts/P1-MESSAGE-REGISTRY.csv",
+      "matrices/RISK-REGISTER.csv",
+      "matrices/EXPERIMENT-REGISTRY.csv",
+      "matrices/DECISION-LEDGER.csv",
+      "matrices/EVIDENCE-ADJUDICATION.csv",
+      "matrices/AUTHORITY-OWNERSHIP.csv",
+      "matrices/IMPLEMENTATION-WAVES.csv",
+      "matrices/DESIGN-CLOSURE.csv"
     ],
     "required_globs": [
       {"pattern": "contracts/schema/*.schema.json", "minimum": 1},
       {"pattern": "contracts/sql/*.sql", "minimum": 2}
     ],
-    "contract_registry_required_keys": [
-      "formatVersion",
-      "status",
-      "sourcePartition",
-      "budgets",
-      "owners",
-      "messages",
-      "operations",
-      "errors",
-      "ports",
-      "capabilities",
-      "schemas",
-      "databases",
-      "sqlNegativeVectors"
+    "machine_source": "contracts/contract-registry.json",
+    "vector_source": "contracts/vectors/contract-vectors.json",
+    "ddl_files": [
+      "contracts/sql/bridge-v1.sql",
+      "contracts/sql/mobile-v1.sql"
     ],
-    "contract_registry_id_arrays": [
-      "owners",
-      "messages",
-      "operations",
-      "errors",
-      "ports",
-      "capabilities",
-      "schemas",
-      "databases"
+    "operation_slots": [
+      {"prefix": "OP-", "start": 1, "end": 39, "width": 3},
+      {"prefix": "PX-", "start": 1, "end": 30, "width": 3}
     ],
-    "negative_vector_required_ids": [
-      "cross_source_foreign_key",
-      "duplicate_active_claim",
-      "duplicate_active_dispatch",
-      "outcome_unknown_replay",
-      "draft_cascade"
+    "state_machine_count": 24,
+    "feature_contribution_count": 52,
+    "lane_inventory": [
+      "THREAD_PROVIDER",
+      "THREAD_STATE",
+      "INTERACTION",
+      "SOURCE_POLICY",
+      "BRIDGE_TRUST",
+      "RUNTIME_SESSION",
+      "CONTENT_OFFER",
+      "TRANSFER",
+      "FILE_ROOT",
+      "GALLERY",
+      "GIT_WORKSPACE",
+      "CAPTURE_SCOPE"
     ]
   }
 }
