@@ -1,0 +1,373 @@
+{
+  "format_version": 1,
+  "design_directory": "docs/design/codex-kernel-v4",
+  "control_budgets_bytes": {
+    "envelope": 65536,
+    "payload": 57344,
+    "interaction_answer": 49152
+  },
+  "preflight_required_files": [
+    "00-READ-ME-FIRST.md",
+    "01-INPUT-AND-DECISION-LOCK.md",
+    "02-ARCHITECTURE-AND-OWNERS.md",
+    "03-CUMULATIVE-DESIGN-AND-FREEZE-GATES.md",
+    "04-UNIFIED-DOMAIN-AND-DATAFLOW.md",
+    "05-CONTENT-AND-PRODUCT-OPERATIONS.md",
+    "06-STATE-MACHINES-AND-SEMANTIC-AXES.md",
+    "PROCESS-LEDGER.md",
+    "drafts/IMPLEMENTATION-VALIDATION-ROLLBACK.md",
+    "drafts/KERNEL-CAPABILITY-COMPLETION.md",
+    "drafts/MIGRATION-CUTOVER-PLAN.md",
+    "drafts/P1-IDENTITY-AUTHORITY-RECEIVE.md",
+    "drafts/P1-OPERATIONS-INTERACTIONS-RELATIONS.md",
+    "drafts/P2-DEVICE-FILES-MEDIA-GIT.md",
+    "drafts/P2-NATIVE-PRODUCT-SHELL.md",
+    "drafts/REQUIREMENT-COVERAGE-REPORT.md",
+    "drafts/SOURCE-REUSE-REPORT.md",
+    "matrices/BASELINE-DISPOSITION.csv",
+    "matrices/USER-DECISION-REQUIRED.csv",
+    "drafts/AUDIT-COVERAGE-CLOSURE.csv",
+    "drafts/EXPERIMENT-AND-GATE-MATRIX.csv",
+    "drafts/K-CAPABILITY-COMPLETION.csv",
+    "drafts/P1-IDENTITY-RECEIVE-MATRIX.csv",
+    "drafts/P1-OPERATION-STATE-MATRIX.csv",
+    "drafts/P2-CAPABILITY-P001-P013.csv",
+    "drafts/P2-CAPABILITY-P014-P026.csv",
+    "drafts/SOURCE-REUSE-DISPOSITION.csv",
+    "validation/README.md",
+    "validation/VALIDATION-SPEC.md",
+    "validation/expected-inventory.json",
+    "validation/validate_design.py"
+  ],
+  "csv_tables": [
+    {
+      "path": "matrices/BASELINE-DISPOSITION.csv",
+      "id_column": "artifact_id",
+      "row_count": 30,
+      "min_columns": 10,
+      "required_columns": [
+        "artifact_id",
+        "baseline_path",
+        "section_or_contract",
+        "disposition",
+        "reason",
+        "audit_or_requirement_ids",
+        "unchanged_invariants",
+        "required_delta",
+        "verification",
+        "status"
+      ],
+      "id_sequence": [
+        {"prefix": "B-", "start": 1, "end": 30, "width": 3}
+      ]
+    },
+    {
+      "path": "matrices/USER-DECISION-REQUIRED.csv",
+      "id_column": "decision_id",
+      "row_count": 9,
+      "min_columns": 8,
+      "required_columns": [
+        "decision_id",
+        "question",
+        "status",
+        "root_recommendation_not_assumed",
+        "design_seam_while_unresolved",
+        "latest_decision_gate",
+        "impact_if_changed",
+        "evidence_or_user_basis"
+      ],
+      "id_sequence": [
+        {"prefix": "U-", "start": 1, "end": 9, "width": 3}
+      ]
+    },
+    {
+      "path": "drafts/P1-IDENTITY-RECEIVE-MATRIX.csv",
+      "id_column": "row_id",
+      "row_count": 37,
+      "min_columns": 22,
+      "required_columns": [
+        "row_id",
+        "semantic_or_contract",
+        "category",
+        "baseline_disposition",
+        "definition",
+        "unique_owner",
+        "execution_location",
+        "authority_identity",
+        "scope_fence",
+        "durability",
+        "states",
+        "typed_errors",
+        "capacity_or_bound",
+        "unknown_behavior",
+        "required_interface",
+        "ddl_pressure",
+        "wire_pressure",
+        "failure_vector",
+        "source_locations",
+        "evidence_level",
+        "change_cost",
+        "phase1_status"
+      ],
+      "id_sequence": [
+        {"prefix": "P1-ID-", "start": 1, "end": 9, "width": 3},
+        {"prefix": "P1-FN-", "start": 1, "end": 4, "width": 3},
+        {"prefix": "P1-RD-", "start": 1, "end": 5, "width": 3},
+        {"prefix": "P1-CA-", "start": 1, "end": 6, "width": 3},
+        {"prefix": "P1-LV-", "start": 1, "end": 3, "width": 3},
+        {"prefix": "P1-WR-", "start": 1, "end": 3, "width": 3},
+        {"prefix": "P1-CR-", "start": 1, "end": 2, "width": 3},
+        {"prefix": "P1-DEL-", "start": 1, "end": 3, "width": 3},
+        {"prefix": "P1-UD-", "start": 6, "end": 7, "width": 3}
+      ]
+    },
+    {
+      "path": "drafts/P1-OPERATION-STATE-MATRIX.csv",
+      "id_column": "mutation_id",
+      "row_count": 38,
+      "min_columns": 24,
+      "required_columns": [
+        "mutation_id",
+        "typed_variant",
+        "operation_lifecycle_owner",
+        "domain_effect_owner",
+        "execution_location",
+        "target_identity",
+        "offline_policy",
+        "admission_fingerprint",
+        "queue_lane",
+        "preconditions",
+        "delivery_policy",
+        "replay_policy",
+        "reconcile_policy",
+        "accepted_evidence",
+        "canonical_observation",
+        "terminal_success",
+        "typed_errors",
+        "wire_request",
+        "wire_result",
+        "bridge_storage",
+        "mobile_storage",
+        "current_source_locations",
+        "phase2_remainder",
+        "fact_status"
+      ],
+      "id_sequence": [
+        {"prefix": "OP-", "start": 1, "end": 39, "width": 3, "exclude": [7]}
+      ]
+    },
+    {
+      "path": "drafts/K-CAPABILITY-COMPLETION.csv",
+      "id_column": "capability_id",
+      "row_count": 26,
+      "min_columns": 19,
+      "required_columns": [
+        "capability_id",
+        "user_visible_effect",
+        "unique_existing_root_owner",
+        "execution_place",
+        "current_source_paths",
+        "current_tests",
+        "phase1_contract_refs",
+        "phase2_ui_controller_work",
+        "typed_state",
+        "typed_errors",
+        "capacity_and_unknown_behavior",
+        "storage_or_no_storage",
+        "data_flow",
+        "deliberate_negative_vector",
+        "acceptance_layers",
+        "rollback_and_disposition",
+        "source_presence",
+        "runtime_status",
+        "root_conflict_or_open_decision"
+      ],
+      "id_sequence": [
+        {"prefix": "K-", "start": 1, "end": 26, "width": 3}
+      ]
+    },
+    {
+      "path": "drafts/P2-CAPABILITY-P001-P013.csv",
+      "id_column": "capability_id",
+      "row_count": 13,
+      "min_columns": 17,
+      "required_columns": [
+        "capability_id",
+        "capability",
+        "default_effect",
+        "user_entry_and_actions",
+        "object_identity",
+        "phase1_relation",
+        "core_decision",
+        "product_contract",
+        "states_and_errors",
+        "limits_storage_permissions_lifecycle",
+        "bridge_mobile_native_execution",
+        "control_and_content_plane",
+        "source_disposition",
+        "fallback_and_compatibility",
+        "acceptance",
+        "rollback",
+        "root_coordination_pressure"
+      ],
+      "id_sequence": [
+        {"prefix": "P-", "start": 1, "end": 13, "width": 3}
+      ]
+    },
+    {
+      "path": "drafts/P2-CAPABILITY-P014-P026.csv",
+      "id_column": "capability_id",
+      "row_count": 13,
+      "min_columns": 14,
+      "required_columns": [
+        "capability_id",
+        "feature",
+        "interface_pressure",
+        "product_owner",
+        "entry",
+        "states_errors",
+        "capacity",
+        "storage_privacy",
+        "platform_capability_entitlement",
+        "lifecycle_and_callback_fence",
+        "source_disposition",
+        "acceptance",
+        "rollback",
+        "experiment"
+      ],
+      "id_sequence": [
+        {"prefix": "P-", "start": 14, "end": 26, "width": 3}
+      ]
+    },
+    {
+      "path": "drafts/SOURCE-REUSE-DISPOSITION.csv",
+      "id_column": "capability_id",
+      "row_count": 52,
+      "min_columns": 9,
+      "required_columns": [
+        "capability_id",
+        "current_owner_paths",
+        "current_tests",
+        "behavior_to_keep",
+        "implementation_disposition",
+        "forbidden_copy_or_dependency",
+        "proposed_seam",
+        "fact_level",
+        "symbol_call_seam"
+      ],
+      "id_sequence": [
+        {"prefix": "K-", "start": 1, "end": 26, "width": 3},
+        {"prefix": "P-", "start": 1, "end": 26, "width": 3}
+      ]
+    },
+    {
+      "path": "drafts/AUDIT-COVERAGE-CLOSURE.csv",
+      "id_column": "id",
+      "row_count": 112,
+      "min_columns": 9,
+      "required_columns": [
+        "id",
+        "class",
+        "required_design_artifact",
+        "phase",
+        "closure_rule",
+        "evidence_input",
+        "owner",
+        "expected_failing_test",
+        "current_status"
+      ],
+      "id_sequence": [
+        {"prefix": "P0-", "start": 1, "end": 15, "width": 2},
+        {"prefix": "P1-", "start": 1, "end": 10, "width": 2},
+        {"prefix": "K-", "start": 1, "end": 26, "width": 3},
+        {"prefix": "P-", "start": 1, "end": 26, "width": 3},
+        {"prefix": "D-", "start": 1, "end": 12, "width": 3},
+        {"prefix": "U-", "start": 1, "end": 9, "width": 3},
+        {"prefix": "UNK-", "start": 1, "end": 14, "width": 3}
+      ]
+    },
+    {
+      "path": "drafts/EXPERIMENT-AND-GATE-MATRIX.csv",
+      "id_column": "gate_id",
+      "row_count": 28,
+      "min_columns": 12,
+      "required_columns": [
+        "gate_id",
+        "gate_kind",
+        "stage_id",
+        "scope",
+        "required_evidence",
+        "positive_acceptance",
+        "deliberate_fault_or_negative_vector",
+        "pass_rule",
+        "fail_action",
+        "blocks",
+        "status",
+        "external_authorization_required"
+      ],
+      "id_sequence": [
+        {"prefix": "H", "start": 0, "end": 18, "width": 2},
+        {"prefix": "D", "start": 0, "end": 8, "width": 2}
+      ]
+    }
+  ],
+  "source_reference_columns": {
+    "drafts/K-CAPABILITY-COMPLETION.csv": ["current_source_paths", "current_tests"],
+    "drafts/P1-IDENTITY-RECEIVE-MATRIX.csv": ["source_locations"],
+    "drafts/P1-OPERATION-STATE-MATRIX.csv": ["current_source_locations"],
+    "drafts/SOURCE-REUSE-DISPOSITION.csv": ["current_owner_paths", "current_tests"]
+  },
+  "phase2_files": [
+    "05-CONTENT-AND-PRODUCT-OPERATIONS.md",
+    "drafts/P2-CAPABILITY-P001-P013.csv",
+    "drafts/P2-CAPABILITY-P014-P026.csv",
+    "drafts/P2-DEVICE-FILES-MEDIA-GIT.md",
+    "drafts/P2-NATIVE-PRODUCT-SHELL.md"
+  ],
+  "final": {
+    "required_files": [
+      "FULL_DESIGN.md",
+      "contracts/contract-registry.json",
+      "contracts/sql/negative-vectors.json",
+      "matrices/RISK_REGISTER.csv",
+      "matrices/EXPERIMENT-AND-GATE-MATRIX.csv",
+      "matrices/AUDIT-COVERAGE-CLOSURE.csv"
+    ],
+    "required_globs": [
+      {"pattern": "contracts/schema/*.schema.json", "minimum": 1},
+      {"pattern": "contracts/sql/*.sql", "minimum": 2}
+    ],
+    "contract_registry_required_keys": [
+      "formatVersion",
+      "status",
+      "sourcePartition",
+      "budgets",
+      "owners",
+      "messages",
+      "operations",
+      "errors",
+      "ports",
+      "capabilities",
+      "schemas",
+      "databases",
+      "sqlNegativeVectors"
+    ],
+    "contract_registry_id_arrays": [
+      "owners",
+      "messages",
+      "operations",
+      "errors",
+      "ports",
+      "capabilities",
+      "schemas",
+      "databases"
+    ],
+    "negative_vector_required_ids": [
+      "cross_source_foreign_key",
+      "duplicate_active_claim",
+      "duplicate_active_dispatch",
+      "outcome_unknown_replay",
+      "draft_cascade"
+    ]
+  }
+}
