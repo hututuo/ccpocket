@@ -1,0 +1,37 @@
+CC Pocket v3 source/protocol index (sanitized)
+
+Generated schema:
+  env CODEX_HOME=<EXP>/codex-home codex app-server generate-json-schema
+    --experimental --out <EXP_SCHEMA>/schema
+  exit=0; v2 schema contains ThreadStartParams, ThreadTurnsListParams,
+  ThreadItemsListParams, ThreadUnsubscribeParams, TurnStartParams and
+  ServerNotification.
+
+Important source locations:
+  <REPO>/packages/bridge/src/local-features/slots/conversation-sync-v2-protocol.ts
+    lines 9-21 capabilities; 52-109 client messages; 146-188 status/gap model;
+    200-323 server events; 325-338 bounds.
+  <REPO>/packages/bridge/src/local-features/conversation-sync-v2.ts
+    lines 115-195 budgets/timers; 562-576 v2 handler ownership;
+    770-873 daemon/legacy mode and reader setup; 6254-6299 timers/cold pass;
+    6312-6444 live-content batching and scheduling.
+  <REPO>/packages/bridge/src/local-features/codex-bounded-history.ts
+    lines 37-43 pagination boundary; 70-159 items/turns fallback;
+    164-207 bounded readAll; 219-320 cursor/order validation;
+    376-415 unsupported-method classification.
+  <REPO>/packages/bridge/src/local-features/conversation-mirror.ts
+    lines 29-47 limits; 137-175 marker plus bounded history read;
+    217-317 stable entry normalization; 1325-1428 snapshot/patch transfer;
+    1487-1504 ID-based diff.
+  <REPO>/apps/mobile/lib/features/conversation_content_sync/
+    conversation_content_sync_service.dart lines 182-189, 435-489;
+    SQLite repository transaction code is in
+    session_list/cache/session_catalog_cache_repository.dart lines 1719-2277.
+  <REPO>/apps/mobile/lib/features/chat_session/state/detached_timeline_projection.dart
+    lines 32-128 is the pure canonical/outgoing/runtime projection.
+  <REPO>/apps/mobile/lib/features/chat_session/state/chat_session_cubit.dart
+    lines 1596-1834 runtime/content fence; 6389-6448 v2 projection;
+    6498-6504 legacy weave path; 6606-6844 alias weave implementation.
+
+The source inventory shows v2 is additive over the older continuity/mirror and
+legacy weave paths; it is not yet a single physically removed timeline writer.

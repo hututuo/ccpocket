@@ -1,0 +1,32 @@
+CC Pocket v3 isolated app-server transport probe (sanitized)
+
+Isolation:
+  CODEX_HOME=<EXP>/codex-home
+  standalone package: <EXP>/codex-home/packages/standalone/current ->
+    <STANDALONE_PACKAGE>
+  throwaway project: <EXP>/project
+  no production Bridge, Desktop configuration, real session or credential used.
+
+Commands:
+  env CODEX_HOME=<EXP>/codex-home codex app-server daemon start
+  env CODEX_HOME=<EXP>/codex-home codex app-server daemon version
+  stat -f 'mode=%Sp inode=%i dev=%d type=%HT' <EXP>/codex-home/app-server-control/app-server-control.sock
+  node <raw WebSocket probe>
+  env CODEX_HOME=<EXP>/codex-home codex app-server proxy --sock <SOCK>
+  env CODEX_HOME=<EXP>/codex-home codex app-server daemon stop
+
+Raw output:
+  daemon start: status=started, backend=pid, managedCodexVersion=0.146.0,
+    socketPath=<EXP>/codex-home/app-server-control/app-server-control.sock
+  socket: mode=srw------- inode=<ISOLATED_INODE> dev=<DEV> type=Socket
+  raw UDS HTTP upgrade: HTTP/1.1 101 Switching Protocols
+  raw initialize response: result keys userAgent,codexHome,platformFamily,platformOs
+  raw thread/list response: data=[]
+  proxy HTTP upgrade: HTTP/1.1 101 Switching Protocols
+  proxy initialize response: result keys userAgent,codexHome,platformFamily,platformOs
+  daemon stop: status=stopped
+
+The daemon stderr log is <EXP>/codex-home/app-server-daemon/app-server.stderr.log.
+Observed only isolated warnings: project trust disabled in the throwaway folder,
+optional featured-plugin 401, and one expected WebSocket close/reset from the
+probe. No production path or credential was copied.

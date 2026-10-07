@@ -1,0 +1,18 @@
+CC Pocket v3 outgoing recovery source probe (sanitized)
+
+Source evidence:
+  <REPO>/apps/mobile/lib/services/draft_service.dart lines 49-133 persists
+  schemaVersion=2, clientMessageId, createdAt, lastAttemptAt, attemptCount,
+  lastError, text and images in draft_pending_submission_v1_*.
+  <REPO>/apps/mobile/lib/features/codex_session/codex_session_screen.dart
+  lines 1043-1071 restore a persisted record as a failed outgoing bubble;
+  lines 1073-1148 only an explicit retry dispatches it.
+  The same file lines 1970-2040 dispatches initialSubmission only for a new
+  explicit submission, not a recovered failed record.
+  <REPO>/apps/mobile/lib/features/chat_session/state/chat_session_cubit.dart
+  lines 8020-8082 rejects an already dispatched clientMessageId and
+  lines 10768-10820 reuses the original clientMessageId for retry.
+
+Current source therefore no longer shows the old silent auto-resend path. A
+legacy persisted record is still a durable failed bubble until the user taps
+retry; this is a source fact, not a physical-device acceptance claim.

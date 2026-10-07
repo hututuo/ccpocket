@@ -1,0 +1,194 @@
+{
+  "reportVersion": 1,
+  "reportType": "ccpocket-v3-local-fact-investigation",
+  "generatedAt": "2026-08-17",
+  "status": "investigation_complete_no_production_change",
+  "repository": {
+    "branch": "main",
+    "head": "7db4efe5e857c24752825a2a2f2fbba3eda32c1d",
+    "preExistingUntracked": [
+      "notes/ccpocket-issues-mixed-fixed-and-unfixed_20260817.md"
+    ]
+  },
+  "isolation": {
+    "codexHome": "<EXP>/codex-home",
+    "project": "<EXP>/project",
+    "bridge": "isolated-only",
+    "realSessionsModified": false,
+    "productionBridgeModified": false,
+    "desktopConfigModified": false,
+    "credentialsCollected": false,
+    "personalPathsAndIdsRedacted": true
+  },
+  "items": [
+    {
+      "id": "D-01",
+      "result": "PASS",
+      "summary": "Current Desktop process has CODEX_APP_SERVER_USE_LOCAL_DAEMON=1 and is attached to the daemon path.",
+      "evidence": "notes/local-agent-investigation-20260817/raw/01-live-desktop-daemon.txt",
+      "source": "packages/bridge/src/codex-desktop-shared-runtime.test.ts:93-148"
+    },
+    {
+      "id": "D-02",
+      "result": "FAIL",
+      "summary": "Desktop and daemon share the same kernel socket endpoint, but bundled Desktop Codex 0.148.0-alpha.9 differs from daemon 0.146.0.",
+      "evidence": "notes/local-agent-investigation-20260817/raw/01-live-desktop-daemon.txt",
+      "source": "packages/bridge/src/codex-transport.test.ts:171-301; decisions.md:1736-1738"
+    },
+    {
+      "id": "D-03",
+      "result": "PASS",
+      "summary": "No private stdio app-server child was found in the sampled Desktop process tree.",
+      "evidence": "notes/local-agent-investigation-20260817/raw/01-live-desktop-daemon.txt",
+      "source": "packages/bridge/src/codex-desktop-shared-runtime.test.ts:283-312"
+    },
+    {
+      "id": "D-04",
+      "result": "UNKNOWN",
+      "summary": "First switch/restart requirement was not tested because production Desktop was not changed.",
+      "evidence": "notes/local-agent-investigation-20260817/raw/01-live-desktop-daemon.txt",
+      "source": "decisions.md:1748-1751"
+    },
+    {
+      "id": "D-05",
+      "result": "UNKNOWN",
+      "summary": "Transaction rollback is covered in isolated tests, but real Desktop kill/restart recovery is untested.",
+      "evidence": "notes/local-agent-investigation-20260817/raw/05-source-and-protocol-index.txt",
+      "source": "packages/bridge/src/codex-desktop-shared-runtime.test.ts:218-280"
+    },
+    {
+      "id": "D-06",
+      "result": "PASS",
+      "summary": "Codex 0.146.0 exposes codex resume --remote unix://PATH as the formal interactive attach option; full TUI smoke remains untested.",
+      "evidence": "notes/local-agent-investigation-20260817/raw/02-isolated-daemon-and-proxy.txt",
+      "source": "installed codex 0.146.0 help; packages/bridge/src/codex-transport.test.ts:278-301"
+    },
+    {
+      "id": "D-07",
+      "result": "PASS",
+      "summary": "app-server proxy forwards raw WebSocket bytes and JSON-RPC; it is not a TUI protocol.",
+      "evidence": "notes/local-agent-investigation-20260817/raw/02-isolated-daemon-and-proxy.txt",
+      "source": "installed codex 0.146.0 proxy help; packages/bridge/src/codex-transport.test.ts:171-225"
+    },
+    {
+      "id": "R-01",
+      "result": "PASS",
+      "summary": "Two raw clients both received thread/started and thread/status/changed notifications.",
+      "evidence": "notes/local-agent-investigation-20260817/raw/03-two-client-rpc-and-methods.txt",
+      "source": "decisions.md:1743-1747"
+    },
+    {
+      "id": "R-02",
+      "result": "UNKNOWN",
+      "summary": "Unsubscribe returned unsubscribed, but no authenticated turn notification existed to prove complete suppression.",
+      "evidence": "notes/local-agent-investigation-20260817/raw/03-two-client-rpc-and-methods.txt",
+      "source": "packages/bridge/src/local-features/slots/conversation-sync-v2-protocol.ts:82-87"
+    },
+    {
+      "id": "R-03",
+      "result": "FAIL",
+      "summary": "Fresh thread/started can precede state DB materialization; immediate thread/list returned zero. Desktop sidebar remains unknown.",
+      "evidence": "notes/local-agent-investigation-20260817/raw/03-two-client-rpc-and-methods.txt",
+      "source": "decisions.md:1739-1742"
+    },
+    {
+      "id": "R-04",
+      "result": "UNKNOWN",
+      "summary": "Persisted turn pages re-read stably after restart; complete started/delta/completed item identity was not authenticated-provider tested.",
+      "evidence": "notes/local-agent-investigation-20260817/raw/04-cursor-restart.txt",
+      "source": "packages/bridge/src/local-features/conversation-mirror.ts:231-281"
+    },
+    {
+      "id": "R-05",
+      "result": "FAIL",
+      "summary": "The same clientUserMessageId produced two different successful turn IDs at app-server level.",
+      "evidence": "notes/local-agent-investigation-20260817/raw/03-two-client-rpc-and-methods.txt",
+      "source": "packages/bridge/src/session.ts:2591-2626,3328-3397"
+    },
+    {
+      "id": "R-06",
+      "result": "FAIL",
+      "summary": "Persisted cursor survived restart, but a newly acknowledged in-progress turn was not immediately visible in history; compact was not supported by this unauthenticated probe.",
+      "evidence": "notes/local-agent-investigation-20260817/raw/04-cursor-restart.txt",
+      "source": "packages/bridge/src/local-features/codex-bounded-history.ts:164-207"
+    },
+    {
+      "id": "R-07",
+      "result": "FAIL",
+      "summary": "thread/items/list returned -32601 unsupported at runtime despite schema presence.",
+      "evidence": "notes/local-agent-investigation-20260817/raw/03-two-client-rpc-and-methods.txt",
+      "source": "packages/bridge/src/local-features/codex-bounded-history.ts:376-398"
+    },
+    {
+      "id": "R-08",
+      "result": "PASS",
+      "summary": "Synthetic isolated catalog/normalizer/bounded-reader measurements are bounded and within local targets; real provider/network/UI latency remains unknown.",
+      "evidence": "notes/local-agent-investigation-20260817/raw/06-performance-and-tests.txt",
+      "source": "packages/bridge/scripts/benchmark-conversation-sync-v2.mjs:1-240"
+    },
+    {
+      "id": "R-09",
+      "result": "UNKNOWN",
+      "summary": "Daemon mode disables the older rollout content monitor and uses shared observer plus long cold reconcile; immediate cold-thread coverage is not proven.",
+      "evidence": "notes/local-agent-investigation-20260817/raw/05-source-and-protocol-index.txt",
+      "source": "packages/bridge/src/local-features/conversation-sync-v2.ts:770-787,6254-6299"
+    },
+    {
+      "id": "R-10",
+      "result": "UNSUPPORTED",
+      "summary": "No authenticated provider approval was run; Bridge exact-generation safety is tested, while independent Desktop-owned approval must fail closed.",
+      "evidence": "notes/local-agent-investigation-20260817/raw/05-source-and-protocol-index.txt",
+      "source": "packages/bridge/src/codex-shared-runtime-control.test.ts:169-243; decisions.md:1043-1048"
+    },
+    {
+      "id": "R-11",
+      "result": "PASS",
+      "summary": "Current v2 registry, wire, mirror, continuity, SQLite and Cubit merge/alias paths were inventoried; no deletion was performed.",
+      "evidence": "notes/local-agent-investigation-20260817/raw/05-source-and-protocol-index.txt",
+      "source": "packages/bridge/src/local-features/slots/conversation-sync-v2-protocol.ts:9-338; apps/mobile/lib/features/chat_session/state/chat_session_cubit.dart:6389-6844"
+    },
+    {
+      "id": "R-12",
+      "result": "FAIL",
+      "summary": "No automated test currently proves real Bridge WSS through Dart decoder, SQLite, Repository, Cubit and rendered semantic receipt.",
+      "evidence": "notes/local-agent-investigation-20260817/raw/07-chain-coverage.txt",
+      "source": "packages/bridge/src/blackbox/conversation-real-rollout.test.ts:54-231; apps/mobile/lib/features/conversation_content_sync/conversation_content_sync_service.dart:182-189"
+    },
+    {
+      "id": "R-13",
+      "result": "PASS",
+      "summary": "Current Mobile source restores unconfirmed pending submissions as failed and only explicit retry dispatches them; physical-device version is unknown.",
+      "evidence": "notes/local-agent-investigation-20260817/raw/08-outgoing-recovery.txt",
+      "source": "apps/mobile/lib/features/codex_session/codex_session_screen.dart:1043-1148"
+    },
+    {
+      "id": "R-14",
+      "result": "FAIL",
+      "summary": "The checked-in protocol fixture provenance records an older Bridge head, so it is not current-HEAD proof.",
+      "evidence": "notes/local-agent-investigation-20260817/raw/07-chain-coverage.txt",
+      "source": "packages/bridge/src/blackbox/conversation-real-rollout.test.ts:48-76"
+    }
+  ],
+  "decisionTable": {
+    "desktopSharedSwitch": "PASS current endpoint; FAIL exact-version gate; UNKNOWN first-switch restart semantics",
+    "cliSameDaemonAttach": "PASS codex resume --remote unix://PATH contract; TUI smoke UNKNOWN",
+    "coldThreadImmediateDetection": "FAIL immediate list before materialization; Desktop sidebar UNKNOWN",
+    "stableItemIdentity": "Persisted restart reread PASS; full lifecycle UNKNOWN; items/list FAIL",
+    "clientMessageIdDuplicateBehavior": "FAIL at app-server; Bridge ledger must deduplicate",
+    "cursorRestartStability": "PASS persisted cursor across restart; FAIL immediate append visibility; compact UNSUPPORTED",
+    "desktopUnknownThreadDiscovery": "app-server immediate list FAIL; Desktop GUI UNKNOWN",
+    "approvalRouting": "Bridge-owned exact-generation PASS; Desktop-owned cross-connection UNSUPPORTED/deny"
+  },
+  "artifacts": {
+    "markdown": "notes/local-agent-investigation-20260817/LOCAL_FACT_REPORT.md",
+    "rawEvidenceDirectory": "notes/local-agent-investigation-20260817/raw",
+    "templateFilled": "09-local-agent-report-template.json"
+  },
+  "nextGates": [
+    "Align Desktop bundled Codex and daemon exact version in an isolated pilot",
+    "Run fake-provider notification and unsubscribe matrix",
+    "Add real Bridge WSS to headless Dart SQLite/Cubit semantic-receipt test",
+    "Regenerate current-HEAD fixtures and hashes",
+    "Run authenticated-provider compact/cursor/item identity tests"
+  ]
+}

@@ -1,0 +1,30 @@
+CC Pocket v3 isolated performance/test probe (sanitized)
+
+Commands:
+  env HOME=<EXP> CODEX_HOME=<EXP>/codex-home NODE_ENV=test
+    node packages/bridge/scripts/benchmark-conversation-sync-v2.mjs
+  node --input-type=module <normalizeConversationMirrorSnapshot benchmark>
+  node --input-type=module <CodexBoundedHistoryReader fake-page benchmark>
+  packages/bridge/node_modules/.bin/vitest run
+    packages/bridge/src/local-features/conversation-mirror.test.ts
+    packages/bridge/src/local-features/conversation-sync-v2.test.ts
+  cd apps/mobile && flutter test ...
+
+Raw isolated benchmark output:
+  liveCatalog: observedEntries=2, p95=0.4349 ms (throwaway catalog)
+  synthetic catalog=1500: priority p95=34.7315 ms,
+    complete p95=50.5545 ms, maxActiveReads=2,
+    maxFrameBytes=57603, historyReadsRepeat=0
+  synthetic catalog=10000: priority p95=83.6833 ms,
+    complete p95=97.0026 ms, maxActiveReads=2,
+    maxFrameBytes=57603, historyReadsRepeat=0
+  normalize 100 turns/10000 items: 58.24 ms, 10000 entries
+  normalize 100 turns/50000 items: 214.62 ms, 50000 entries
+  bounded reader fake pages 10000 items: 100 calls, 2.97 ms
+  bounded reader fake pages 50000 items: 500 calls, 15.80 ms
+  Bridge targeted tests: 2 files, 217 passed, 0 failed, 17.15 s
+  Flutter command: `flutter: command not found`
+
+The earlier benchmark run without the isolated environment is discarded and is
+not used as evidence. The numbers above are synthetic/adapter measurements, not
+provider network latency or physical-iPhone rendering.

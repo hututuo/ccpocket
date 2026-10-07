@@ -1,0 +1,39 @@
+CC Pocket v3 two-client raw JSON-RPC probe (sanitized)
+
+Environment: fresh/throwaway CODEX_HOME, one isolated daemon UDS, two raw
+WebSocket clients A and B. All IDs and input text are redacted.
+
+Commands/actions:
+  initialize(capabilities.experimentalApi=true) on A and B
+  A: thread/start(cwd=<EXP>/project)
+  B: thread/list(useStateDbOnly=true, sortKey=recency_at)
+  A: thread/unsubscribe(threadId=<THREAD>)
+  A: turn/start(threadId=<THREAD>, clientUserMessageId=<CLIENT_ID>)
+  A/B: collect notifications for 1.8 s
+  Separate fresh materialization probe: thread/turns/list, thread/items/list,
+    duplicate turn/start with the same clientUserMessageId.
+
+Raw output (from the fresh probe):
+  A initialize: result received
+  B initialize: result received
+  thread/start: ok, status=idle
+  first cold B thread/list: count=0 (before durable materialization)
+  thread/unsubscribe: status=unsubscribed
+  turn/start: ok, status=inProgress
+  notification methods observed on A: configWarning,
+    remoteControl/status/changed, thread/started, thread/status/changed
+  notification methods observed on B: configWarning,
+    remoteControl/status/changed, thread/started, thread/status/changed
+  A/B thread-scoped event counts: 1 / 1
+
+Raw method behavior on a newly started unmaterialized thread:
+  thread/turns/list: code=-32600, message="thread ... is not materialized yet;
+    thread/turns/list is unavailable before first user message"
+  thread/items/list: code=-32601, message="thread/items/list is not supported yet"
+  duplicate turn/start with the same clientUserMessageId: first and second
+    responses both succeeded and returned different turn IDs; equal=false
+
+The repeated stateful run returned B list count=1 because its throwaway state DB
+already contained the prior probe thread. The fresh count=0 is the evidence for
+the cold-materialization race; both outputs are preserved here to avoid hiding
+the state-dependent behavior.

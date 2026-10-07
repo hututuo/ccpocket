@@ -1,0 +1,33 @@
+CC Pocket v3 local fact probe (sanitized)
+
+Scope: read-only process, environment, version and Unix-socket inspection. No
+launchctl mutation, Desktop restart, Bridge restart, or session write.
+
+Commands:
+  /Applications/ChatGPT.app/Contents/Resources/codex --version
+  codex --version
+  PlistBuddy -c 'Print :CFBundleShortVersionString' ChatGPT.app/Contents/Info.plist
+  PlistBuddy -c 'Print :CFBundleVersion' ChatGPT.app/Contents/Info.plist
+  ps eww -p <DESKTOP_PID> -o command= | tr ' ' '\n' | rg 'CODEX_APP_SERVER|CODEX_HOME'
+  stat -f 'mode=%Sp inode=%i dev=%d type=%HT' <HOME>/.codex/app-server-control/app-server-control.sock
+  lsof -nP -a -p <DESKTOP_PID> -U
+  lsof -nP -a -p <DAEMON_PID> -U
+  codex app-server daemon version
+  ps -axo pid=,ppid=,command= | rg 'codex app-server.*stdio|codex app-server --listen stdio'
+
+Raw output (paths, PIDs and socket addresses redacted):
+  Desktop bundle short version: 26.810.52044
+  Desktop bundle build: 6662
+  Desktop-bundled Codex: codex-cli 0.148.0-alpha.9
+  Standalone Codex: codex-cli 0.146.0
+  GUI environment: CODEX_APP_SERVER_USE_LOCAL_DAEMON=1
+  control socket: mode=srw------- inode=<SOCKET_INODE> dev=<DEV> type=Socket
+  Desktop FD: unix ... -><KERNEL_SOCKET_ENDPOINT>
+  daemon FD: unix <KERNEL_SOCKET_ENDPOINT> ... <REDACTED_SOCKET_PATH>
+  daemon version: status=running, backend=pid, managedCodexVersion=0.146.0,
+    cliVersion=0.146.0, appServerVersion=0.146.0
+  private stdio app-server candidates: none in the sampled process tree
+
+Interpretation: the live Desktop process is attached to the same kernel Unix
+socket endpoint as the daemon and no private stdio app-server child was found.
+The client/daemon versions are nevertheless not exact.

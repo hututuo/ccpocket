@@ -1,0 +1,26 @@
+CC Pocket v3 chain-coverage probe (sanitized)
+
+Bridge black-box test:
+  packages/bridge/src/blackbox/conversation-real-rollout.test.ts
+  gated by CCPOCKET_REAL_CHAIN=1; it replays an immutable development rollout
+  prefix through a real BridgeWebSocketServer and raw WebSocket frames, ACKs
+  v2 pages, checks frame size, unique entry IDs and expected window counts.
+  It requires a local unredacted source rollout/state DB supplied at runtime;
+  it was not run against production.
+
+Existing provenance:
+  test-fixtures/conversation-chain/protocol-wire.provenance.json says
+  "fake Provider boundary -> production BridgeWebSocketServer capture" and
+  explicitly does not prove Codex raw turn normalization or physical iPhone
+  rendering.
+
+Mobile tests:
+  apps/mobile/test/features/conversation_content_sync/
+  use sqflite_common_ffi temporary databases plus a fake gateway. They verify
+  commit-before-ACK, atomic staging, retry/reset and runtime overlay fences, but
+  do not consume a real Bridge WSS byte stream.
+
+No repository test currently runs the complete single process:
+  real/fake Provider -> real Bridge -> real WSS -> Dart decoder -> real SQLite
+  -> Repository -> ChatSessionCubit -> rendered Widget semantic receipt.
+  Therefore the complete chain is not yet proven by automation.

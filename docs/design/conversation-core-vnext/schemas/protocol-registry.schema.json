@@ -1,0 +1,149 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ccpocket.local/schemas/conversation-core/protocol-registry.schema.json",
+  "title": "CC Pocket Conversation Core protocol registry",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "registryVersion",
+    "status",
+    "protocol",
+    "normativeDocuments",
+    "messages"
+  ],
+  "properties": {
+    "$schema": { "type": "string" },
+    "registryVersion": { "type": "integer", "const": 1 },
+    "status": {
+      "enum": ["draft_architecture_baseline", "implementation_ready"]
+    },
+    "protocol": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "major", "minor"],
+      "properties": {
+        "name": { "const": "ccpocket.conversation" },
+        "major": { "type": "integer", "const": 3 },
+        "minor": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "normativeDocuments": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": { "type": "string", "minLength": 1 }
+    },
+    "messages": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/message" }
+    }
+  },
+  "$defs": {
+    "message": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "type",
+        "featureId",
+        "featureMajor",
+        "featureMinor",
+        "direction",
+        "kind",
+        "targetScope",
+        "delivery",
+        "requiredPayload"
+      ],
+      "properties": {
+        "type": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9_]*(?:\\.[a-z][a-z0-9_]*)+$",
+          "maxLength": 128
+        },
+        "featureId": {
+          "type": "string",
+          "pattern": "^ccpocket\\.[a-z][a-z0-9_]*(?:\\.[a-z][a-z0-9_]*)*$",
+          "maxLength": 128
+        },
+        "featureMajor": { "type": "integer", "minimum": 1 },
+        "featureMinor": { "type": "integer", "minimum": 0 },
+        "direction": {
+          "enum": ["client_to_server", "server_to_client"]
+        },
+        "kind": {
+          "enum": ["handshake", "request", "response", "event", "mutation", "ack"]
+        },
+        "targetScope": {
+          "enum": [
+            "connection",
+            "source",
+            "sync_scope",
+            "thread",
+            "turn",
+            "item",
+            "interaction",
+            "input_intent",
+            "operation_target",
+            "queue_item",
+            "content_object",
+            "path_capability",
+            "diagnostic_capture"
+          ]
+        },
+        "delivery": {
+          "enum": [
+            "handshake",
+            "subscription",
+            "bounded_read",
+            "durable_projection",
+            "durable_queueable_before_dispatch",
+            "durable_reconcile_only",
+            "live_fenced",
+            "memory_only",
+            "content_transfer",
+            "safety_outbox"
+          ]
+        },
+        "requiredPayload": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "pattern": "^[A-Za-z][A-Za-z0-9_.]*$"
+          }
+        },
+        "responseTypes": {
+          "type": "array",
+          "uniqueItems": true,
+          "description": "Correlated acceptance or terminal response message types. Subscriptions list their first accepted boundary, not an end-of-subscription event.",
+          "items": { "type": "string" }
+        },
+        "operationPolicy": {
+          "enum": [
+            "durable_queueable_before_dispatch",
+            "durable_reconcile_only",
+            "live_fenced",
+            "safety_outbox"
+          ]
+        },
+        "notes": { "type": "string", "maxLength": 512 }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": { "kind": { "const": "mutation" } },
+            "required": ["kind"]
+          },
+          "then": { "required": ["operationPolicy", "responseTypes"] }
+        },
+        {
+          "if": {
+            "properties": { "kind": { "enum": ["request", "handshake"] } },
+            "required": ["kind"]
+          },
+          "then": { "required": ["responseTypes"] }
+        }
+      ]
+    }
+  }
+}

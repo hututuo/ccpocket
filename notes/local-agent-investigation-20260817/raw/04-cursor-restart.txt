@@ -1,0 +1,21 @@
+CC Pocket v3 cursor/restart probe (sanitized)
+
+Commands/actions in isolated CODEX_HOME:
+  thread/turns/list(threadId=<THREAD>, sortDirection=asc, itemsView=full)
+  save returned backwardsCursor
+  codex app-server daemon restart
+  reuse the same cursor after restart
+  start one additional turn, immediately query the first page again
+
+Raw output:
+  persisted page: data length=1, nextCursor=null,
+    backwardsCursor={turnId:<TURN>,includeAnchor:true}
+  after daemon restart with the same cursor: same page, no error
+  thread/resume(excludeTurns=true) after restart: idle, turnCount=0
+  immediately after a new turn/start: first history page still showed the
+    previous committed page; the new inProgress turn was not yet durable
+
+This proves restart stability for the persisted cursor, but also proves that
+turn/start acknowledgement is earlier than history commit. Compact behavior
+could not be exercised without an authenticated provider turn; no compact test
+was run against production.
