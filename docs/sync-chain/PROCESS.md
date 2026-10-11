@@ -2141,3 +2141,46 @@ ad3126cf的c1j-final-selected-93为92 PASS / 1 FAIL，1 / 44.974秒；原83与�
 复核范围澄清：无receipt且完全相同business/observedAt仍不能重建已撤lease；无票但signature/时间改变仍沿既有完整接纳，
 本delta没改变该路径，不能泛称所有缓存无票不可恢复。源码注释只澄清范围；若要扩大策略，下一批先建立独立合同。
 固定后续输入再跑最终93/全量/静态/格式并复查新观察helper；旧固定review归其原输入，不冒充后续fixture已审。
+
+## E091 — 云端续接C1j：冻结真实同步完成与目录观察边界
+
+用户于2026-10-11澄清接手范围包含原功能抽取与渐进重构，repair缺口修复不是整体完成。
+本轮从脱敏保存头 `6d435d3a4ac085b56b82b055db70018a352901da` 建立独立
+`codex/continue-sync-chain-extraction-20261011`；原4aa0历史及repair续修e0e5分别保留，不机械合并。
+A/B和C1a–C1i既有接受范围保留；C2/D未完成，R45/R47完整策略/R49及历史未知不借测试总数关闭。
+
+当前干净基线两条status reload receiver实跑0 PASS / 2 FAIL：false在SQL/catalog一致观察超时，
+true复现:453的Expected empty / Actual status update。原4aa0的92/1历史失败继续保留，原本机日志未取得。
+本轮真实wire显示status_changes47的新statusState被sync_complete50的旧状态覆盖，后续54才完成最新状态；
+重试读取旧resume state时实际Bridge合法重发相同业务状态。现有helper只观察syncUpdates，
+也可能错过SessionList随后独立完成的cached map通知。不能按source相同推断同步已静止。
+
+本批先补测试观察：同时监听原syncUpdates和catalogSnapshotChanges，读取原SQL status/sync state，
+要求当前订阅的实际完整status batch、完成帧和持久resume state一致，再开始无状态重放窗口。
+监听先于SQL读并保持原10秒上限；不睡眠、不更换时间/authority、不增加产品writer或绕过真实Bridge。
+保留无replay时已suspend继续只读、真实新authority/低序号才恢复、cached无票和canonical单次等业务断言。
+固定输入后执行相关93项、全量Mobile、Bridge适用检查、静态/变更文件格式及独立复审。
+只有上述C1j合同真实通过后才登记此段接受；进一步结构抽取须遵守PLAN的证据边界。
+
+## E092 — C1j实际观察边界纠正与云端完整门禁
+
+本批只改status reload receiver及账本，产品lib/Bridge/协议/数据库/依赖与保存基线6d435d3a逐项不变。
+E091的“无状态重放窗口”假设继续由实际wire纠正：resume token可能过期，真实Bridge可合法重发status。
+测试按实际完成帧/SQL resume token/catalog JSON取不可变样本；若有replay，每个page/sequence/receipt须与实际wire和commit完全一致。
+本fixture单thread/single-page范围明确；无replay仍要求原事实完全相等，已suspend仍只读，不借新subscription恢复权限。
+成功93项的两条receiver实际均无replay；有效新票恢复另由八项公开生命周期合同证明，不冒称已执行所有producer重放组合。
+cached-only前停并join拥有的Service，再读取实际SQL冻结状态，核对它来自真实wire；原consumer重建/DB重开均全JSON相等且无receipt。
+真实same-public-ID replacement、新authority/低seq恢复、原Updater identity及canonical单次断言保留。
+
+当前baseline0/2及中间c1j-settled、actual-resume、receiver-final的FAIL各自保留；其中cross-sub helper和live clock快照问题已按真实wire定位。
+原4aa0的92/1历史记录不改，缺原始本机log的直接原因仍UNKNOWN。观察设施失败不登记成新的产品red。
+
+证据目录：`/workspace/ccpocket-review-evidence/20261011-sync-chain/`，每项命令/输入diff hash/UTC/退出码见同名JSON，完整log和fixture trace保留。
+- c1j-selected-93-first：93 PASS，65.703秒；测试blob 2bfc325765bca51491bd8192e41ce545f8d2472d。
+- 最终test blob a7945ed63d75c8b993d276f708eb9f01338037d6只清unused/non-null/braces；只读独立复核PASS，未独立跑tests。
+- c1j-mobile-full：3422 PASS / 4 SKIPPED，531.101秒，concurrency=1；最终blob实际执行，完整输入/输出一致。
+- c1j-mobile-analyze-final：0 error/warning、1017 info，25.529秒；变更test format 0 changed、diff-check通过。
+- c1j-bridge-full：2528 PASS / 21 SKIPPED，46.007秒；Linux实际执行，不借Mac历史2548/1总数。build和noEmit实际执行，noEmit 8.210秒。
+
+C1j选定cached/retry/receipt合同接受；R47整体旧/未来authority策略、R45/R49与历史未知仍开放，C2/D未完成。
+下一C1k仅迁移已验证的status观察职责；scope与owner责任先登记，再实施纯结构变更。

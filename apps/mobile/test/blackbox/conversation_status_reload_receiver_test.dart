@@ -106,7 +106,6 @@ void main() {
                 jsonDecode(harness.readyLine.substring(6))
                     as Map<String, dynamic>;
             final threadId = ready['threadId']! as String;
-            final turnId = ready['turnId']! as String;
             final traceRoot = ready['traceRoot']! as String;
             var controlSequence = 0;
             Future<Map<String, dynamic>> control(
@@ -160,6 +159,38 @@ void main() {
             );
             ChatSessionCubit? chat;
             final trace = <Map<String, Object?>>[];
+            final statusFrames = <ConversationSyncV2EventMessage>[];
+            ConversationSyncV2EventMessage? lastStatusBatch;
+            ConversationSyncV2EventMessage? lastCompletedBatch;
+            ConversationSyncCacheUpdate? lastCompletedCommit;
+            String? lastCompletedSubscriptionId;
+            final completionObserver = sync.syncUpdates.listen((update) {
+              if (update.kind == ConversationSyncCacheUpdateKind.completed) {
+                lastCompletedCommit = update;
+                lastCompletedSubscriptionId =
+                    sync.diagnosticSnapshot(
+                          provider: 'codex',
+                          providerSessionId: threadId,
+                        )['activeSubscriptionId']
+                        as String?;
+              }
+            });
+            final wireObserver = bridge.messages.listen((message) {
+              if (message is! ConversationSyncV2EventMessage) return;
+              if (message.event == ConversationSyncV2EventKind.statusChanges) {
+                statusFrames.add(message);
+                if (message.statusChanges.any(
+                  (status) =>
+                      status.provider == 'codex' &&
+                      status.providerSessionId == threadId,
+                )) {
+                  lastStatusBatch = message;
+                }
+              } else if (message.event ==
+                  ConversationSyncV2EventKind.syncComplete) {
+                lastCompletedBatch = message;
+              }
+            });
             SessionCatalogCacheTarget target() =>
                 SessionCatalogCacheTarget.fromBridge(
                   bridgeInstanceId: bridge.bridgeInstanceId,
@@ -175,40 +206,82 @@ void main() {
             }
 
             Future<
-              ({ConversationSyncV2Status sql, ConversationSyncV2Status catalog})
+              ({
+                ConversationSyncV2Status sql,
+                ConversationSyncV2Status catalog,
+                String subscriptionId,
+                int sequence,
+              })
             >
             committedStatus(String authority) async {
               final changes = StreamController<void>();
               final observer = sync.syncUpdates.listen(
                 (_) => changes.add(null),
               );
+              final catalogObserver = sessionList.catalogSnapshotChanges.listen(
+                (_) => changes.add(null),
+              );
               final result = changes.stream
                   .asyncMap((_) async {
+                    final statusBatch = lastStatusBatch;
+                    final completedBatch = lastCompletedBatch;
+                    if (statusBatch == null ||
+                        completedBatch == null ||
+                        (completedBatch.subscriptionId ==
+                                statusBatch.subscriptionId &&
+                            completedBatch.sequence <= statusBatch.sequence) ||
+                        lastCompletedCommit?.sequence !=
+                            completedBatch.sequence ||
+                        lastCompletedSubscriptionId !=
+                            completedBatch.subscriptionId ||
+                        completedBatch.nextState?.statusState !=
+                            statusBatch.statusState ||
+                        sync.diagnosticSnapshot(
+                              provider: 'codex',
+                              providerSessionId: threadId,
+                            )['activeSubscriptionId'] !=
+                            completedBatch.subscriptionId) {
+                      return null;
+                    }
                     final sql = await repository.loadConversationStatus(
                       target: target(),
                       provider: 'codex',
                       providerSessionId: threadId,
                     );
+                    final resume = await repository.loadConversationSyncState(
+                      target(),
+                    );
                     final catalog = sessionList
                         .conversationStatuses['codex\u0000$threadId'];
                     if (sql == null ||
                         catalog == null ||
+                        !identical(statusBatch, lastStatusBatch) ||
+                        !identical(completedBatch, lastCompletedBatch) ||
+                        resume.statusState != statusBatch.statusState ||
                         sql.authorityGeneration != authority ||
                         jsonEncode(sql.toJson()) !=
-                            jsonEncode(catalog.toJson()))
+                            jsonEncode(catalog.toJson())) {
                       return null;
-                    return (sql: sql, catalog: catalog);
+                    }
+                    return (
+                      sql: sql,
+                      catalog: catalog,
+                      subscriptionId: completedBatch.subscriptionId,
+                      sequence: completedBatch.sequence,
+                    );
                   })
                   .firstWhere((sample) => sample != null)
                   .then((sample) => sample!)
                   .timeout(const Duration(seconds: 10));
-              // Listen before the first real SQL read so a reset/commit between
-              // samples cannot strand the observer behind a missed notification.
+              // SQL commit, catalog projection and sync completion have separate
+              // notifications. Observe all of them before the first real read;
+              // a matching business row alone does not prove resume is settled.
               changes.add(null);
               try {
                 return await result;
               } finally {
                 await observer.cancel();
+                await catalogObserver.cancel();
                 await changes.close();
               }
             }
@@ -395,7 +468,7 @@ void main() {
               final mounted = tester.state(
                 find.byType(DurableSessionPreviewUpdater),
               );
-              expect(chat!.canMutateAttachedRuntime, isTrue);
+              expect(chat.canMutateAttachedRuntime, isTrue);
               expect(assistantIds(), ['assistant-status-reload']);
               expect(projection()['runtimeOverlayCount'], 0);
               trace.add({
@@ -423,8 +496,9 @@ void main() {
                   .timeout(const Duration(seconds: 10));
               final retryStatusCommits = <ConversationSyncCacheUpdate>[];
               final lifecycleObserver = sync.syncUpdates.listen((update) {
-                if (update.kind == ConversationSyncCacheUpdateKind.status)
+                if (update.kind == ConversationSyncCacheUpdateKind.status) {
                   retryStatusCommits.add(update);
+                }
                 if (update.kind == ConversationSyncCacheUpdateKind.started) {
                   final projected =
                       sessionList.conversationStatuses['codex\u0000$threadId'];
@@ -447,22 +521,109 @@ void main() {
                 );
                 await resumed;
                 await tester.pump();
-                final retained =
-                    sessionList.conversationStatuses['codex\u0000$threadId']!;
-                expect(retained.toJson(), live.toJson());
-                expect(retryStatusCommits, isEmpty);
-                expect(chat.canMutateAttachedRuntime, !suspendBeforeRetry);
+                final resumedSample = await committedStatus(
+                  event.authorityGeneration!,
+                );
+                final retained = resumedSample.catalog;
                 final newSubscription = sync.diagnosticSnapshot(
                   provider: 'codex',
                   providerSessionId: threadId,
                 )['activeSubscriptionId'];
                 expect(newSubscription, isNot(event.subscriptionId));
+                expect(newSubscription, resumedSample.subscriptionId);
+                // Resume may legitimately replay status when its token changed
+                // during the preceding batch. Compare every committed page to
+                // actual wire facts, rather than assuming the producer was idle.
+                final replayFrames = statusFrames
+                    .where(
+                      (frame) =>
+                          frame.subscriptionId == newSubscription &&
+                          frame.sequence <= resumedSample.sequence,
+                    )
+                    .toList();
+                final committedReplayPages = retryStatusCommits
+                    .where(
+                      (update) => update.sequence! <= resumedSample.sequence,
+                    )
+                    .toList();
+                // This fixture has one catalog thread, hence one status page.
+                // Multi-page aggregation is covered by the Service contracts.
+                for (final frame in replayFrames) {
+                  expect(frame.pageIndex, 0);
+                  expect(frame.pageCount, 1);
+                }
+                expect(
+                  committedReplayPages
+                      .map(
+                        (update) => [
+                          update.sequence,
+                          update.statusChanges
+                              .map((status) => status.toJson())
+                              .toList(),
+                        ],
+                      )
+                      .toList(),
+                  replayFrames
+                      .map(
+                        (frame) => [
+                          frame.sequence,
+                          frame.statusChanges
+                              .map((status) => status.toJson())
+                              .toList(),
+                        ],
+                      )
+                      .toList(),
+                );
+                final replayedStatuses = committedReplayPages
+                    .expand((update) => update.statusChanges)
+                    .where(
+                      (status) =>
+                          status.provider == 'codex' &&
+                          status.providerSessionId == threadId,
+                    )
+                    .toList();
+                if (replayedStatuses.isEmpty) {
+                  expect(retained.toJson(), live.toJson());
+                  expect(chat.canMutateAttachedRuntime, !suspendBeforeRetry);
+                } else {
+                  final lastReplay = replayedStatuses.last;
+                  expect(retained.toJson(), lastReplay.toJson());
+                  expect(resumedSample.sql.toJson(), lastReplay.toJson());
+                  expect(
+                    lastReplay.authorityGeneration,
+                    live.authorityGeneration,
+                  );
+                  expect(lastReplay.runtimeSessionId, runtime.id);
+                  expect(
+                    lastReplay.commitReceipt!.subscriptionId,
+                    newSubscription,
+                  );
+                  expect(chat.canMutateAttachedRuntime, isTrue);
+                }
+                for (final update in committedReplayPages) {
+                  for (final status in update.statusChanges) {
+                    expect(
+                      status.commitReceipt!.subscriptionId,
+                      newSubscription,
+                    );
+                    expect(status.commitReceipt!.sequence, update.sequence);
+                    expect(
+                      status.commitReceipt!.sourceFingerprint,
+                      target().fingerprint,
+                    );
+                  }
+                }
                 trace.add({
-                  'stage': 'same-source-resume-without-status-replay',
+                  'stage': 'same-source-resume-actual-commits',
                   'subscription': newSubscription,
                   'oldSubscription': event.subscriptionId,
                   'status': retained.toJson(),
-                  'statusCommits': retryStatusCommits.length,
+                  'statusCommits': committedReplayPages.length,
+                  'completeSequence': resumedSample.sequence,
+                  'replayedStatusCount': replayedStatuses.length,
+                  'wireStatusSequences': replayFrames
+                      .map((frame) => frame.sequence)
+                      .toList(),
                   'runtimeProjection': chat.diagnosticRuntimeProjection,
                 });
               } finally {
@@ -508,6 +669,33 @@ void main() {
               );
               expect(assistantIds(), ['assistant-status-reload']);
 
+              // Stop and join this test's receiver before exercising cached-only
+              // consumers. Runtime activity may keep advancing observedAt while
+              // the live subscription runs; it is not a frozen SQL snapshot.
+              await sync.dispose();
+              final persistedStatus = await repository.loadConversationStatus(
+                target: target(),
+                provider: 'codex',
+                providerSessionId: threadId,
+              );
+              expect(persistedStatus, isNotNull);
+              expect(
+                persistedStatus!.authorityGeneration,
+                replaced['newAuthority'],
+              );
+              expect(persistedStatus.runtimeSessionId, runtime.id);
+              expect(persistedStatus.commitReceipt, isNull);
+              expect(
+                statusFrames
+                    .expand((frame) => frame.statusChanges)
+                    .any(
+                      (status) =>
+                          jsonEncode(status.toJson()) ==
+                          jsonEncode(persistedStatus.toJson()),
+                    ),
+                isTrue,
+              );
+
               // Recreate the original SessionList consumer on the same SQL
               // partition. Its constructor actually reloads cached status;
               // same-target session_list notifications alone skip that reload.
@@ -530,7 +718,7 @@ void main() {
                 );
                 final reread =
                     sessionList.conversationStatuses['codex\u0000$threadId']!;
-                expect(reread.toJson(), fresh.toJson());
+                expect(reread.toJson(), persistedStatus.toJson());
                 expect(reread.commitReceipt, isNull);
                 await mount(canonical, runtime.id);
                 expect(
@@ -573,7 +761,7 @@ void main() {
                   providerSessionId: threadId,
                 );
                 expect(cached, isNotNull);
-                expect(cached!.toJson(), fresh.toJson());
+                expect(cached!.toJson(), persistedStatus.toJson());
                 expect(cached.commitReceipt, isNull);
                 trace.add({
                   'stage': 'sqlite-close-reopen',
@@ -591,6 +779,8 @@ void main() {
               });
               rethrow;
             } finally {
+              await wireObserver.cancel();
+              await completionObserver.cancel();
               await tester.pumpWidget(const SizedBox.shrink());
               if (chat?.isClosed == false) await chat!.close();
               await streaming.close();
