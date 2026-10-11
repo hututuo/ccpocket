@@ -51,7 +51,7 @@
 | R44 | T2 event先入隔离队列，随后退休T1显示 | 同source/runtime/authority、时间不旧的T2不被T1退休清空；原flush验证后应用 | PASS direct T2与先旧terminal两项public契约、当前3412项全量；两项red保留。同binding/authority范围，不扩张到future authority或真实双turn；E054/E055/E059/E064 |
 | R45 | visual pending 256/257策略 | 对照provisional visual原则审定溢出/重放/completion副作用 | NOT_RUN；只登记原现状，暂不迁移此队列；RUNTIME-QUEUE-ENTRY |
 | R46 | 正确runtime的unknown/unavailable快照保留旧idle | 保留的activity不取得新terminal清理资格；后续authoritative idle仍结束 | PASS 21项terminal+13项queue共34项及最新全量，原20 PASS/1 FAIL red保留；E056/E057/E059 |
-| R47 | queue-only authority replacement / future authority waiting | 分清已失效旧authority与合法未来authority；不能从有visible owner的测试推断一律清理 | NOT_RUN完整策略：R50等待、R52 Bridge catalog gate与R54实际Mobile两窗口/R55 live commit顺序分别PASS。overlay自身await-after另由R56 PASS；cached-only无receipt/跨订阅仍待C1j，不能将跨stream序号比较或清所有mismatch当已审定；QUEUE-AUTHORITY-ENTRY / E083/E085 |
+| R47 | queue-only authority replacement / future authority waiting | 分清已失效旧authority与合法未来authority；不能从有visible owner的测试推断一律清理 | NOT_RUN完整策略：R50等待、R52 Bridge catalog gate与R54实际Mobile两窗口/R55 live commit顺序分别PASS。overlay自身await-after另由R56 PASS；C1j选定缓存/订阅/恢复合同93项及完整3422/4通过，完整策略仍开放；不能将跨stream序号比较或清所有mismatch当已审定；QUEUE-AUTHORITY-ENTRY / E083/E085 |
 | R48 | 已知runtime身份的旧缓存与原mutation lease | 控制/设置/审批目标必须属于当前已证明owner；旧B既不能授予C权限，也不能替换合法C或取消其image lease；无binding仍只读 | PASS 选定契约：16行为red→green与cold-start两项candidate red→green，26项新契约/相关313项、16196f05全量3396/4及固定review通过；8178295d最终静态复查通过。无ID旧组合归属另列R49；E061–E065 / RUNTIME-AUTHORITY-ENTRY |
 | R49 | 无runtime身份字段的旧V2 / appServer组合 | 维持合法兼容用途，不伪造remote ID，不把原generation/source规则当完整远端归属证明 | NOT_RUN：旧V2合法lease、legacy idle、Desktop detach与durable target保护PASS；缺字段的连续A→B→C远端归属仍未证明，独立策略入口，E063 |
 | R50 | 实际producer authority已提交、页面尚未观察 | 合法事件仍bounded quarantine且无mutation；原Updater接纳一次，canonical在同页单次接替 | PASS 固定84493fc6真实Bridge/RPC/SQL/Service/SessionList/原Updater，status37→overlay38及三段轨迹身份匹配；错误提前拒绝敏感性FAIL、完整hash恢复后4项PASS。不是同IDreplacement或真实Provider验收；E066–E073 |
@@ -60,8 +60,8 @@
 | R53 | 既有catalog rollout文件监听的全量并发时序 | 原watch输入在既有期限内通知；失败需保留可归因证据 | FAIL 历史保留：911a4f60首次完整2546 PASS / 1 SKIP / 1 FAIL，reports the Codex thread id from a rollout filename超过5000ms；同期限目标9项和完整2547/1重放PASS，直接原因仍未知，不放宽期限或改原文件；E077 |
 | R54 | actual同ID replacement的Mobile已接收旧A、B未新通知/新item | 同subscription后继B已提交并被原页面观察时退休旧A；未观察新B与合法canonical各自保留 | PASS 固定4e6d3d4a：两条实际receiver/83组合/完整3412/4，natural equal B commit51>A overlay37后pending/bytes0，合法A同页单次；B新item先B单次再canonical A+B。b493e9ea真实1/1 red与fixture0/2 FAIL保留；28份trace/静态/固定review，scope仅live receipt，E078–E083 |
 | R55 | status本地SQL commit顺序的旧/未来/跨stream/重复/失效 | 仅合法当前同source/sub后继receipt取得新退休证据，JSON不携带票，未来事件仍等待/单次接納 | PASS 十项public合同8c5002a9的7 PASS/3 FAIL→4e6d3d4a在83组合/完整3412/4全部green；缺票/跨source/sub/同seq保守，duplicate新票只flush，旧票不覆盖owner、null reset清票。真实Service/SQL票另由R54核对，不扩张cached-only/跨订阅全策略；E081–E083 |
-
 | R56 | actual A overlay自身capacity await期间同ID replacement B | 精确A payload新增原waiter/Promise未settle；public ACK后原重查退休A、B完整status先于单次overlay，close前预算0 | PASS 固定d67c8b92实际Bridge/SessionManager/raw stdio，A frame61,014 bytes，A status最后204→own wait→B实际投影→ACK，B status220→overlay221。删原post-await重查敏感性直接FAIL（A205+B222），hash恢复后2项/原完整2548/1与类型/语法/固定review通过；仅producer，不扩张cached-only/跨sub/设备，E084/E085 |
+| R57 | detached status观察状态单owner与失效 | 13字段签名、严格时间/同stream票比较、3clear、suspend保留、cached-null、history/diagnostic保持，资格/权限/queue仍归Cubit | PASS 固定659d的同输入93项/完整3422 PASS/4 SKIP、静态1017info逐项无变化、format/独立只读复核；只接受观察职责迁移，不扩张R47，E093/E094 |
 
 R09/R10 的最上游是隔离 Provider fixture，使用真实 Bridge、协议、SQLite 和页面相关代码；
 即使 PASS，也只证明接收闭环，不冒充 R13/R14。

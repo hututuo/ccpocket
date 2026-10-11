@@ -222,3 +222,10 @@ A自身wait实际已进入、resolver/Promise保持pending，才触发原same-ID
 public累计ACK负责恢复，原wait返回后原sequenced/superseded重查退休A。B完整status先于单次overlay，关闭前pending/budget/waiter0。
 固定d67c8b92 full2548/1与移除post-await重查直接FAIL→hash恢复/2项PASS，35份trace及固定review见E085/supplementalC1i。
 原生产TS/依赖与全部Mobile输入不变；Mobile3412/4仍归4e6d3d4a。R47 cached-only/跨订阅、R45/R49与设备/真实Provider仍未验收。
+
+## C1k后的status观察边界
+
+DetachedStatusObservation独占observedAt、13字段签名与local receipt；同stream比较、matches、record/refresh/clear集中于该模块。
+原Cubit继续资格核对、authority lease与queue应用/退休。runtime/source/null原接点clear，suspend保留观察并撤lease；history fallback和diagnostic读原事实。
+C1j按实际wire/SQL/catalog完成取样，cached-only先join owned receiver，观察合同与结构抽取分别提交。
+固定659d的93项/完整3422/4、静态/格式/独立复核通过，详见DETACHED-STATUS-OBSERVATION / E094；C2/D及R47整套政策仍未完成。

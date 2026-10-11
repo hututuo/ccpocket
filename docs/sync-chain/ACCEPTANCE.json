@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "scope": "selected C1c–C1i source/fixture contracts; C1h live local SQL commit-order receiver and C1i actual producer own-await replacement; not whole runtime or release acceptance",
+  "scope": "selected C1c–C1k source and fixture contracts; C1j receiver observation and C1k detached status observation ownership; whole refactoring remains ongoing",
   "branch": "codex/sync-chain-extraction-20261001",
   "workspace": "/Users/developer/.codex/worktrees/sync-chain-20261001/ccpocket-compat",
   "fullMobileAndReviewSha": "16196f05bf60943c1ebbc49475353a7b085fa1a4",
@@ -162,7 +162,7 @@
   ],
   "unacceptedPolicies": [
     "R45 visual pending 256/257",
-    "R47 whole old/future authority policy: cached-only without receipt and cross-subscription remain unproved; selected own-await proven separately R56",
+    "R47 whole old/future authority policy remains open; selected cached/retry/receipt contracts accepted separately in C1j",
     "R49 remote ownership without optional runtime ID"
   ],
   "evidenceDirectory": "/Users/developer/AI agent/Codex/_tmp/ccpocket-sync-chain-20261001",
@@ -699,13 +699,13 @@
       "evidenceSha256": "4e446cb29012e959069b62dcb4f15332d20c776bfdb234b044ceeefd81e8cfc3"
     }
   },
-  "historicalTopLevelInputsScope": "fullMobileAndReviewSha/productTree/gates retain C1e actual inputs; latestSourceAcceptance points to C1h actual gates",
+  "historicalTopLevelInputsScope": "Original branch/workspace/fullMobileAndReviewSha/productTree/gates retain C1e historical inputs; currentExecution and latestSourceAcceptance locate current C1k execution.",
   "latestSourceAcceptance": {
-    "sourceAndTestSha": "4e6d3d4a82998016d018239d5b73cd6e1f46ed2d",
-    "supplement": "supplementalC1h",
-    "mobilePassed": 3412,
+    "sourceAndTestSha": "659d44926b7a66e4161aed68344198dcca5c79ee",
+    "supplement": "supplementalC1k",
+    "mobilePassed": 3422,
     "mobileSkipped": 4,
-    "selectedPassed": 83
+    "selectedPassed": 93
   },
   "supplementalC1h": {
     "state": "PASS",
@@ -977,10 +977,11 @@
     ]
   },
   "latestBridgeAcceptance": {
-    "testAndHarnessSha": "d67c8b9205cd1de2e7bbb8ad9157a6adba8966e3",
-    "supplement": "supplementalC1i",
-    "passed": 2548,
-    "skipped": 1
+    "testAndHarnessSha": "6d435d3a4ac085b56b82b055db70018a352901da",
+    "supplement": "supplementalC1j",
+    "passed": 2528,
+    "skipped": 21,
+    "platform": "Linux x86_64"
   },
   "supplementalC1i": {
     "state": "PASS",
@@ -1146,6 +1147,318 @@
     "processEntries": [
       "E084",
       "E085"
+    ]
+  },
+  "currentExecution": {
+    "branch": "codex/continue-sync-chain-extraction-20261011",
+    "workspace": "/workspace/ccpocket-sync-chain-followup",
+    "savedBaseSha": "6d435d3a4ac085b56b82b055db70018a352901da",
+    "validatedSourceAndTestSha": "659d44926b7a66e4161aed68344198dcca5c79ee",
+    "publication": "LOCAL_ONLY_NOT_PUSHED"
+  },
+  "supplementalC1j": {
+    "registeredCheckpointSha": "337c5c5a3d0b30569f5ca76a4de30f8d2cd49b49",
+    "executedBaseSha": "6d435d3a4ac085b56b82b055db70018a352901da",
+    "finalTestBlob": "a7945ed63d75c8b993d276f708eb9f01338037d6",
+    "selectedBehavioralTestBlob": "2bfc325765bca51491bd8192e41ce545f8d2472d",
+    "gates": {
+      "selected93": {
+        "state": "PASS",
+        "receipt": "/workspace/ccpocket-review-evidence/20261011-sync-chain/c1j-selected-93-first.json",
+        "receiptSha256": "8d286e8937161cc6e11181799a6156872463b043a5dc2e09cd70752fb4c25a7b",
+        "log": "/workspace/ccpocket-review-evidence/20261011-sync-chain/c1j-selected-93-first.log",
+        "logSha256": "db4ff250100c9d855762f20026eaa9843c3c26eff1f014734df725ab87970bda",
+        "durationSeconds": 65.703,
+        "executedInput": {
+          "sha": "6d435d3a4ac085b56b82b055db70018a352901da",
+          "tracked_diff_sha256": "087d2e50ff04f9b0f228d14bd489339a1c49a5726eda89c99b16da01c46e17b8",
+          "untracked": {},
+          "status": " M apps/mobile/test/blackbox/conversation_status_reload_receiver_test.dart\n M docs/sync-chain/PROCESS.md\n"
+        },
+        "inputOutputIdentical": true,
+        "inherited": false
+      },
+      "mobileFull": {
+        "state": "PASS",
+        "receipt": "/workspace/ccpocket-review-evidence/20261011-sync-chain/c1j-mobile-full.json",
+        "receiptSha256": "43db520a9274283cef9bf706c9d1e5cea8a94f1e1d0a182e9608ae3c97cf3562",
+        "log": "/workspace/ccpocket-review-evidence/20261011-sync-chain/c1j-mobile-full.log",
+        "logSha256": "16add73f987272c073125db670b018df19ac0c4732ec56d255602b80beb797a3",
+        "durationSeconds": 531.101,
+        "executedInput": {
+          "sha": "6d435d3a4ac085b56b82b055db70018a352901da",
+          "tracked_diff_sha256": "07278963d415b4b645a5525577bb4e809147873a6bfbab332888919d3ccdebef",
+          "untracked": {},
+          "status": " M apps/mobile/test/blackbox/conversation_status_reload_receiver_test.dart\n M docs/sync-chain/PROCESS.md\n"
+        },
+        "inputOutputIdentical": true,
+        "inherited": false,
+        "passed": 3422,
+        "skipped": 4,
+        "finalTestBlob": "a7945ed63d75c8b993d276f708eb9f01338037d6"
+      },
+      "analyze": {
+        "state": "PASS",
+        "receipt": "/workspace/ccpocket-review-evidence/20261011-sync-chain/c1j-mobile-analyze-final.json",
+        "receiptSha256": "01e49515f3fdf18fc8182c354315d3d03eb5b92a71861373d19bba3debb5a774",
+        "log": "/workspace/ccpocket-review-evidence/20261011-sync-chain/c1j-mobile-analyze-final.log",
+        "logSha256": "47df4aebbe722c8b97bb7df2cdbcaa2c7110682f94934f91b68e61fe00a69853",
+        "durationSeconds": 25.529,
+        "executedInput": {
+          "sha": "6d435d3a4ac085b56b82b055db70018a352901da",
+          "tracked_diff_sha256": "07278963d415b4b645a5525577bb4e809147873a6bfbab332888919d3ccdebef",
+          "untracked": {},
+          "status": " M apps/mobile/test/blackbox/conversation_status_reload_receiver_test.dart\n M docs/sync-chain/PROCESS.md\n"
+        },
+        "inputOutputIdentical": true,
+        "inherited": false
+      },
+      "format": {
+        "state": "PASS",
+        "receipt": "/workspace/ccpocket-review-evidence/20261011-sync-chain/c1j-changed-format.json",
+        "receiptSha256": "3f53b8ec2605dec5e0b3502257fa6a126b48a37796333b7d7137ad020b01a72f",
+        "log": "/workspace/ccpocket-review-evidence/20261011-sync-chain/c1j-changed-format.log",
+        "logSha256": "45f3353e898deb4b13521a069348e591aca266875cf9b82d5617f6118e7bec29",
+        "durationSeconds": 0.122,
+        "executedInput": {
+          "sha": "6d435d3a4ac085b56b82b055db70018a352901da",
+          "tracked_diff_sha256": "07278963d415b4b645a5525577bb4e809147873a6bfbab332888919d3ccdebef",
+          "untracked": {},
+          "status": " M apps/mobile/test/blackbox/conversation_status_reload_receiver_test.dart\n M docs/sync-chain/PROCESS.md\n"
+        },
+        "inputOutputIdentical": true,
+        "inherited": false
+      },
+      "bridgeFull": {
+        "state": "PASS",
+        "receipt": "/workspace/ccpocket-review-evidence/20261011-sync-chain/c1j-bridge-full.json",
+        "receiptSha256": "fe5615c9f909553df13512f6aeda9102bf97688418e1801e4c87fcde58bbcd65",
+        "log": "/workspace/ccpocket-review-evidence/20261011-sync-chain/c1j-bridge-full.log",
+        "logSha256": "f0a6380c8660f7950f0a6ae7a2bd8dcbdd7fdd5e42fb2447b4da80f1205e2abe",
+        "durationSeconds": 46.007,
+        "executedInput": {
+          "sha": "6d435d3a4ac085b56b82b055db70018a352901da",
+          "tracked_diff_sha256": "087d2e50ff04f9b0f228d14bd489339a1c49a5726eda89c99b16da01c46e17b8",
+          "untracked": {},
+          "status": " M apps/mobile/test/blackbox/conversation_status_reload_receiver_test.dart\n M docs/sync-chain/PROCESS.md\n"
+        },
+        "inputOutputIdentical": true,
+        "inherited": false,
+        "passed": 2528,
+        "skipped": 21,
+        "platform": "Linux x86_64"
+      },
+      "bridgeTypecheck": {
+        "state": "PASS",
+        "receipt": "/workspace/ccpocket-review-evidence/20261011-sync-chain/c1j-bridge-typecheck.json",
+        "receiptSha256": "eb4c2ae7e58a924e7bf8d2aec4acbfaa7f0e5b231a7940f739a3885c8524dd03",
+        "log": "/workspace/ccpocket-review-evidence/20261011-sync-chain/c1j-bridge-typecheck.log",
+        "logSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "durationSeconds": 8.21,
+        "executedInput": {
+          "sha": "6d435d3a4ac085b56b82b055db70018a352901da",
+          "tracked_diff_sha256": "07278963d415b4b645a5525577bb4e809147873a6bfbab332888919d3ccdebef",
+          "untracked": {},
+          "status": " M apps/mobile/test/blackbox/conversation_status_reload_receiver_test.dart\n M docs/sync-chain/PROCESS.md\n"
+        },
+        "inputOutputIdentical": true,
+        "inherited": false
+      }
+    },
+    "bridgeBuild": {
+      "state": "PASS",
+      "inherited": false,
+      "log": "/workspace/ccpocket-review-evidence/20261011-sync-chain/bridge-build.log",
+      "logSha256": "b8505301e0e137f4ffb7fe4eaadb9629675d752d731c9552c37082baa39c56ba"
+    },
+    "review": {
+      "reviewer": "/root/repair_review",
+      "mode": "read-only",
+      "independent_tests_run": false,
+      "result": "PASS",
+      "behavioral_test_blob": "2bfc325765bca51491bd8192e41ce545f8d2472d",
+      "final_test_blob": "a7945ed63d75c8b993d276f708eb9f01338037d6",
+      "process_blob_at_behavioral_review": "d2935e0d6a4dfcb73f5a72706f09239386e9a4c9",
+      "findings_resolved_before_pass": [
+        "Completion observation must accept a retained status token across subscriptions without ordering cross-stream sequence values.",
+        "Each status update receipt must match its actual committed sequence.",
+        "Use the completed sample boundary to avoid mixing later notification frames into a resumed sample.",
+        "Join the owned receiver before cached-only reload to compare an actual immutable SQL snapshot."
+      ],
+      "final_style_delta": "Removed an unused local and unnecessary non-null assertion; added braces to two if statements. No wire, SQL, catalog, authority or cached-only contract changed.",
+      "limitations": [
+        "The receiver fixture exercises one catalog thread with a single status page; multi-page behavior remains covered separately.",
+        "R47 whole old/future authority policy is not accepted by this review.",
+        "Historical original 4aa0 92 PASS / 1 FAIL cause remains UNKNOWN without its original raw log."
+      ]
+    },
+    "actualSuccessfulResume": "Both selected receivers observed no status replay; qualified fresh receipt recovery is exercised separately by public lifecycle contracts.",
+    "historicalFailure": {
+      "originalSha": "4aa0c2b8355c32e3ba7924360b99c97d21564bcc",
+      "passed": 92,
+      "failed": 1,
+      "cause": "UNKNOWN_ORIGINAL_RAW_LOG_UNAVAILABLE"
+    },
+    "currentBaseline": "0 PASS / 2 FAIL retained separately with actual traces; no product source change in this observation-facility batch."
+  },
+  "supplementalC1k": {
+    "sourceAndTestSha": "659d44926b7a66e4161aed68344198dcca5c79ee",
+    "parentSha": "337c5c5a3d0b30569f5ca76a4de30f8d2cd49b49",
+    "gates": {
+      "mobileFull": {
+        "state": "PASS",
+        "receipt": "/workspace/ccpocket-review-evidence/20261011-sync-chain/c1k-mobile-full.json",
+        "receiptSha256": "8b5a162467ccbc875574d9a3e15f26f3bec60f439dd6fe4cb1cea8b516fbed87",
+        "log": "/workspace/ccpocket-review-evidence/20261011-sync-chain/c1k-mobile-full.log",
+        "logSha256": "bdede04aa51637e67de454d933fe388c8e7e32bdce6d7084318981cfa1478f28",
+        "durationSeconds": 527.738,
+        "executedInput": {
+          "sha": "659d44926b7a66e4161aed68344198dcca5c79ee",
+          "tracked_diff_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "untracked": {},
+          "status": ""
+        },
+        "inputOutputIdentical": true,
+        "inherited": false,
+        "passed": 3422,
+        "skipped": 4,
+        "concurrency": 1
+      },
+      "selected93": {
+        "state": "PASS",
+        "receipt": "/workspace/ccpocket-review-evidence/20261011-sync-chain/c1k-selected-93.json",
+        "receiptSha256": "a36b09446c039bc58b00220da5ce7010333fea912ed97b49d5467a14fa58c838",
+        "log": "/workspace/ccpocket-review-evidence/20261011-sync-chain/c1k-selected-93.log",
+        "logSha256": "c661efa5c1aa9cf4f33a37e86bc4b70aaa0ab1f3d50038c9cb631c8b7c8e2bcf",
+        "durationSeconds": 53.123,
+        "executedInput": {
+          "sha": "659d44926b7a66e4161aed68344198dcca5c79ee",
+          "tracked_diff_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "untracked": {},
+          "status": ""
+        },
+        "inputOutputIdentical": true,
+        "inherited": false
+      },
+      "analyze": {
+        "state": "PASS",
+        "receipt": "/workspace/ccpocket-review-evidence/20261011-sync-chain/c1k-mobile-analyze.json",
+        "receiptSha256": "878a08239b9c392b064fae080c38e6d7a490003309ac4a42179542bc742ade33",
+        "log": "/workspace/ccpocket-review-evidence/20261011-sync-chain/c1k-mobile-analyze.log",
+        "logSha256": "20c389f9ac297e87e83c6dd667f9ec408c2c1d218d912a17fd74cd4a34623bc9",
+        "durationSeconds": 31.442,
+        "executedInput": {
+          "sha": "659d44926b7a66e4161aed68344198dcca5c79ee",
+          "tracked_diff_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "untracked": {},
+          "status": ""
+        },
+        "inputOutputIdentical": true,
+        "inherited": false
+      },
+      "format": {
+        "state": "PASS",
+        "receipt": "/workspace/ccpocket-review-evidence/20261011-sync-chain/c1k-changed-format.json",
+        "receiptSha256": "97635d09ec699f146c8d03f641622d6aef3b3cf701274c860984ffd8bd22d280",
+        "log": "/workspace/ccpocket-review-evidence/20261011-sync-chain/c1k-changed-format.log",
+        "logSha256": "508d516e43b8cac41548f68cf1db38a871bc30bc1d41d05e257427b08f0bcd44",
+        "durationSeconds": 0.451,
+        "executedInput": {
+          "sha": "659d44926b7a66e4161aed68344198dcca5c79ee",
+          "tracked_diff_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "untracked": {},
+          "status": ""
+        },
+        "inputOutputIdentical": true,
+        "inherited": false
+      }
+    },
+    "diagnosticComparison": {
+      "before": "c1j-mobile-analyze-final",
+      "after": "c1k-mobile-analyze",
+      "normalization": "severity + file + full message/code + occurrence count; ignore line/column only",
+      "identical": true,
+      "counts": {
+        "error": 0,
+        "warning": 0,
+        "info": 1017
+      }
+    },
+    "review": {
+      "reviewer": "/root/repair_review",
+      "mode": "read-only",
+      "independent_tests_run": false,
+      "result": "PASS",
+      "source_sha": "659d44926b7a66e4161aed68344198dcca5c79ee",
+      "parent_sha": "337c5c5a3d0b30569f5ca76a4de30f8d2cd49b49",
+      "working_tree": "CLEAN",
+      "file_blobs": {
+        "apps/mobile/lib/features/chat_session/state/chat_session_cubit.dart": "6967bc821a847c669d48f641d25a6c97c4c7e580",
+        "apps/mobile/lib/features/chat_session/state/detached_status_observation.dart": "98b851db7901c8d99f3a926c95539d0a0c3eb011"
+      },
+      "verified": [
+        "Original thirteen signature fields, order and null encoding",
+        "Strictly older observedAt rejection",
+        "Receipt comparison only within source and subscription",
+        "Lower sequence on another subscription remains eligible",
+        "Identical cached status refreshes local receipt to null",
+        "Runtime/source/null clear time, signature and receipt together",
+        "Suspension preserves observation while original Cubit revokes authority",
+        "History fallback and diagnostics read the same facts",
+        "Original Cubit retains identity qualification, authority restoration, control permissions and queue retirement"
+      ],
+      "findings": [],
+      "diff_check": "PASS",
+      "limits": [
+        "R47 whole policy, C2/D and historical UNKNOWN remain open."
+      ]
+    },
+    "inputIdentity": {
+      "source_sha": "659d44926b7a66e4161aed68344198dcca5c79ee",
+      "identities": {
+        "6d435d3a4ac085b56b82b055db70018a352901da": {
+          "apps/mobile/lib": "a5b85bdc12dd06feb334a834a1287374f1565ecb",
+          "apps/mobile/test": "66d196002f976df211ea9ce58e7d3e583377b3ac",
+          "packages/bridge": "1dd62266b9b5bc6345d59bcc553fdda7cc788e70",
+          "package.json": "b5684fabf8688092617cb9d0676facfecbd3fc30",
+          "package-lock.json": "67d5943eeb88ea15e0e2b64eb5b5e83ff616d3b3",
+          "apps/mobile/pubspec.yaml": "ed04de86582f8eed365cec023862d68ae2bca602",
+          "apps/mobile/pubspec.lock": "d867b11559ad2024a3b5c0736e5c9b72c1d22784"
+        },
+        "337c5c5a3d0b30569f5ca76a4de30f8d2cd49b49": {
+          "apps/mobile/lib": "a5b85bdc12dd06feb334a834a1287374f1565ecb",
+          "apps/mobile/test": "4528f00ae610a6b7a3e9f50e35f572efe44a56ed",
+          "packages/bridge": "1dd62266b9b5bc6345d59bcc553fdda7cc788e70",
+          "package.json": "b5684fabf8688092617cb9d0676facfecbd3fc30",
+          "package-lock.json": "67d5943eeb88ea15e0e2b64eb5b5e83ff616d3b3",
+          "apps/mobile/pubspec.yaml": "ed04de86582f8eed365cec023862d68ae2bca602",
+          "apps/mobile/pubspec.lock": "d867b11559ad2024a3b5c0736e5c9b72c1d22784"
+        },
+        "659d44926b7a66e4161aed68344198dcca5c79ee": {
+          "apps/mobile/lib": "b58dabd676e7b2087275dc60eb0039c6c91be494",
+          "apps/mobile/test": "4528f00ae610a6b7a3e9f50e35f572efe44a56ed",
+          "packages/bridge": "1dd62266b9b5bc6345d59bcc553fdda7cc788e70",
+          "package.json": "b5684fabf8688092617cb9d0676facfecbd3fc30",
+          "package-lock.json": "67d5943eeb88ea15e0e2b64eb5b5e83ff616d3b3",
+          "apps/mobile/pubspec.yaml": "ed04de86582f8eed365cec023862d68ae2bca602",
+          "apps/mobile/pubspec.lock": "d867b11559ad2024a3b5c0736e5c9b72c1d22784"
+        }
+      },
+      "bridge_and_dependencies_unchanged": true,
+      "tests_unchanged_since_c1j_checkpoint": true,
+      "selected_and_static_clean_fixed_input": true
+    },
+    "bridgeGate": {
+      "state": "INHERITED_IDENTICAL_TREE",
+      "receiptReference": "supplementalC1j.gates.bridgeFull",
+      "bridgeTree": "1dd62266b9b5bc6345d59bcc553fdda7cc788e70"
+    },
+    "remaining": [
+      "C2 Bridge domain handlers NOT_DONE",
+      "D compatibility retirement NOT_DONE",
+      "R47 whole policy NOT_ACCEPTED",
+      "R45/R49 and historical UNKNOWN remain open",
+      "Real Provider/device/CI/deployment/release NOT_RUN"
     ]
   }
 }

@@ -2,21 +2,17 @@
 
 ## 当前断点
 
-- 时间：2026-10-04（Asia/Shanghai；此前条目保留当时记录）。
-- 分支：`codex/sync-chain-extraction-20261001`；仅隔离worktree本地提交。
-- 起始SHA：`930f1267e949c6cf2095761cc71c43cca08c6dc3`。
-- 阶段：A0–A3/B1、B2、C1a–C1i的选定接缝已完成源码门禁；C1h关闭真实消费/commit顺序R54/R55，C1i补原overlay自身await-after replacement的生产证明R56，未改产品。
-- 最新完整Mobile产品/测试输入：`4e6d3d4a82998016d018239d5b73cd6e1f46ed2d` clean；3412 PASS / 4 SKIPPED，348.327秒，concurrency=1。
-- 定向83项PASS（38.202秒）：10条真实接收链、3条owned启动失败清理、70条公开队列/权限/终态/commit顺序保护。
-- analyze 0 error/warning，1017既有info；severity/file/完整文本/code及重复数量比对8178295d无增减，忽略行列；5个改动Dart文件format 0 changed。
-- 固定4e6d3d4a的GPT-6 Luna/max只读复核无新增可证明P0–P2，未运行独立测试；E082关于suspend清票的文字已纠正。
-- C1h实际natural equal窗口中A仍pending1，B已SQL提交；原Updater接纳真实后继receipt后pending/bytes0，再在同一页面合法canonical A单次接替。
-- C1h仅三个原Mobile产品文件改动：Service在完整SQL/current fence后附本地顺序、status DTO只携带不序列化、原Cubit按严格同stream后继证明退休。原SessionList/Updater/Repository、Bridge生产源码/原tests/fixture/依赖均不变。
-- 最新Bridge测试输入d67c8b92 clean：完整2548 PASS / 1 SKIPPED（18.904秒）、noEmit（3.139秒）与语法（0.135秒）通过，原catalog/新overlay-own gate均PASS；移除await后重查的敏感性直接FAIL，finally源码hash恢复后2项重放PASS（12.256秒）。原生产TS/依赖不变，build继承原输入；先前2547/1仍精确归911a4f60。
-- 本批fixture错误0/2、真实消费red1/1、公开顺序red7/3及先前所有FAIL完整保留；当前绿灯不覆盖历史R29、095cab00或R53 watcher timeout的未知直接原因。
-- 原C1e完整3396/4与import复查、C1f71项、C1g全量/敏感性/恢复分别保留历史输入；最新C1h门禁见E083和ACCEPTANCE.json的supplementalC1h。
-- C1i原overlay自身await-after已闭合；下一C1j审订阅切换/无receipt缓存的证明边界。R47完整策略、R45 visual 256/257、R49无ID旧组合仍未验收，不扩大到C2重写。
-- 真实Provider、模拟器/真机、生产Bridge、云CI、OTA、签名安装/stable/发布NOT_RUN；原生UI工具缺失BLOCKED。原始checkout/修复checkout和生产服务未操作。
+- 时间：2026-10-11T11:09:15.216316+08:00；旧条目保留各自当时的证据。
+- 活动分支：`codex/continue-sync-chain-extraction-20261011`；worktree `/workspace/ccpocket-sync-chain-followup`，仅本地提交。
+- 续接基线：保存头6d435d3a，来自原4aa0脱敏历史；C1j观察修正337c5c5a，C1k纯结构源码/测试固定 `659d44926b7a66e4161aed68344198dcca5c79ee`。
+- 当前选定接受：C1j缓存/订阅/receipt合同、C1k状态观察owner；原A/B/C1a–C1i既有范围保留，整体重构未结束。
+- C1k实际完整Mobile：3422 PASS / 4 SKIP，527.738秒，concurrency=1，clean固定SHA输入/输出相同；抽取前C1j完整也是3422/4（531.101秒）。
+- C1k定向93 PASS（53.123秒）、analyze 0 error/warning / 1017 info逐项与C1j相同、三个变更Dart文件format 0 changed、固定SHA独立只读复核PASS；reviewer未独立跑tests。
+- Bridge本轮实际2528 PASS / 21 SKIP（Linux，46.007秒），build/noEmit通过；C1k精确相同Bridge/test/依赖tree继承，不冒充重跑或Mac历史2548/1。
+- 新模块独占status时间/13字段签名/local receipt；原Cubit保留身份资格、authority lease、queue接纳/退休和投影。责任见DETACHED-STATUS-OBSERVATION。
+- C2/D仍未完成；R47整体旧/未来策略、R45 visual 256/257、R49无runtime ID旧组合仍开放。R47未闭合前不扩大Bridge handler迁移。
+- 原4aa0 92/1直接原因仍UNKNOWN，缺原始本机raw log；本轮可定位FAIL另保留。历史R29/095cab00/R53与真实Provider/设备/部署/发布不借本次源码PASS关闭。
+- 原始/repair worktrees与并列e0e5缺口续修保留；最新精确收据见ACCEPTANCE的supplementalC1j/C1k。
 
 ## E001 — 建立隔离执行与文档
 
@@ -2197,3 +2193,17 @@ runtime/source/null三个原reset接点统一clear；suspend保留已提交观�
 先用原93项公开合同和真实receiver验证结构前后一致，完整Mobile/analyze/变更format、根审及固定源码独立复核通过才接受。
 原Bridge/协议/SessionList/Updater/Repository/依赖不变，Bridge门禁按精确相同tree保留E092实际结果。
 回退本批结构提交可恢复原私有字段与分支，不撤C1j观察合同或先前C1h/C1j行为修复。
+
+## E094 — C1k固定源码抽取前后验证与整体剩余阶段
+
+固定 `659d44926b7a66e4161aed68344198dcca5c79ee` clean，父337c5c5a。仅两个产品Dart文件变化：新增DetachedStatusObservation，原Cubit接点改为窄调用；tests/Bridge/协议/SQL/SessionList/Updater/依赖不变。
+模块独占时间、签名和local receipt；原三处runtime/source/null失效都调用clear，suspend仍保留观察并撤lease。原资格、duplicate恢复、strict stream order、queue退休、diagnostic及history fallback均保持。
+
+c1k-selected-93实际93 PASS / 53.123秒；c1k-mobile-full实际3422 PASS / 4 SKIP / 527.738秒，concurrency=1。
+完整/定向/静态/格式均执行clean固定SHA，收据input/output完全相同；未新增镜像实现tests。
+c1k-mobile-analyze 0 error/warning、1017 info（31.442秒），severity/file/完整文本/code/重复计数与C1j完全相同，忽略行列；三个Dart变更文件format 0 changed。
+固定SHA只读独立复核PASS，未独立测试：Cubit blob6967bc82、新module blob98b851db；逐项核对13字段、3clear、suspend、cached-null、跨sub低seq、history/diagnostic和权限/queue保留。
+精确身份、命令/UTC/退出码、log hash与trace见 `/workspace/ccpocket-review-evidence/20261011-sync-chain/` / supplementalC1k。
+
+C1k观察职责抽取接受，不将整体重构标为完成。C2先补R47尚未接受的真实缓存/订阅/未来authority组合，D先核对支持版本与调用矩阵；R45/R49与历史UNKNOWN各自保留。
+本批source、测试观察修正和接受文档分别提交；结构回退适配原Cubit字段，并保留C1j观察合同及先前行为修复。

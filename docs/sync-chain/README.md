@@ -1,17 +1,17 @@
 # 消息链路梳理与渐进抽取
 
-当前接受断点是 `4e6d3d4a`：完整Mobile **3412 PASS / 4 SKIPPED**，定向83项PASS，
-analyze 0 error/warning、1017既有info无增减，固定源码只读复核无新增可证明P0–P2。
-C1h已将自然相等时间下滞留的旧runtime事件证明为red，再在原Service/status DTO/Cubit三个接点窄修；
-实际SQL提交顺序由纯本地receipt沿原对象传到原页面，不改JSON、数据库、协议或另造队列。
-原SessionList/Updater/Repository、既有tests/fixture和依赖不变；仅隔离分支本地提交。
-最新范围/回退见[过程E083](PROCESS.md#e083--c1h固定输入完整接受与真实相等时钟green)、[操作说明](RUNBOOK.md)、[精确门禁](ACCEPTANCE.json)。
-随后C1i冻结d67c8b92：完整Bridge **2548 PASS / 1 SKIPPED**，实际overlay自身容量await期间同ID替换，
-原Promise返回后重查正确；删重查的隔离实验直接FAIL、源码hash恢复后2项PASS。原生产TS/全部Mobile输入不变。
-最新生产await证据见[过程E085](PROCESS.md#e085--c1i自身await取证故障检出与完整bridge接受)；Mobile3412/4仍精确归4e6d3d4a。
-剩余R47 cached-only/跨订阅完整策略、R45/R49及历史失败归因仍开放；真实Provider/设备/部署/发布未验收。
+当前沿原方案续接功能抽取与重构，活动分支 `codex/continue-sync-chain-extraction-20261011`。
+C1j选定缓存/订阅/receipt合同已恢复完整门禁，C1k已把status时间、签名、本地提交凭据及统一失效抽成独立owner。
+固定产品/测试源码 `659d44926b7a66e4161aed68344198dcca5c79ee`：完整Mobile **3422 PASS / 4 SKIP**、定向93 PASS，
+静态0 error/warning、1017既有info逐项不变，变更format和固定源码独立只读复核通过。
+本轮Bridge实际 **2528 PASS / 21 SKIP**（Linux）、build/typecheck通过；结构批继承精确相同tree，不替换Mac历史收据。
+当前范围见[状态观察职责](DETACHED-STATUS-OBSERVATION.md)、[过程E094](PROCESS.md#e094--c1k固定源码抽取前后验证与整体剩余阶段)与[精确门禁](ACCEPTANCE.json)。
 
-本轮从 `930f1267e949c6cf2095761cc71c43cca08c6dc3` 建立独立分支
+**整体重构仍未完成**：C2 Bridge领域handler拆分、D兼容路径退役仍待推进，R47整体政策、R45/R49及历史UNKNOWN分别开放。
+原4aa0的92 PASS/1 FAIL保留原始历史结论；这次云端观察设施修正不替代缺失原log的历史归因。
+repair e0e5缺口修复作为并列完成结果，不等同整体重构；真实Provider/设备/部署/发布未据源码PASS验收。
+
+原实施线从 `930f1267e949c6cf2095761cc71c43cca08c6dc3` 建立独立分支
 `codex/sync-chain-extraction-20261001`。首先验证选定短闭环，再抽取已证明边界的职责。
 原始 main、修复分支及生产运行状态不是本分支的操作目标。
 
@@ -102,6 +102,7 @@ C1i另闭合overlay自身await后的replacement（R56 / E085），未改生产�
 10. [状态身份](RUNTIME-STATUS-IDENTITY.md)、[队列职责](RUNTIME-QUEUE-ENTRY.md)：C1c/C1d 的选定契约与未知边界。
 11. [控制权限入口](RUNTIME-AUTHORITY-ENTRY.md)：C1e 的旧runtime公开失败、兼容保护与修复范围。
 12. [下一authority入口](QUEUE-AUTHORITY-ENTRY.md)、[精确门禁记录](ACCEPTANCE.json)：未知策略的证据次序与当前执行身份。
+13. [状态观察职责](DETACHED-STATUS-OBSERVATION.md)：C1k单owner、失效/恢复接点与结构回退。
 
 过程记录不得以旧证据覆盖新失败。源码测试通过、真实 Provider、模拟器、真机、部署和发布分别报告。
 这组文档与对应代码一同提交；原始测试输出保存为独立文件，账本记录命令、身份、结果和证据路径。

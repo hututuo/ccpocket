@@ -1,7 +1,7 @@
 # 接手、修改与验证操作说明
 
-本轮工作目录：`/Users/developer/.codex/worktrees/sync-chain-20261001/ccpocket-compat`。
-分支：`codex/sync-chain-extraction-20261001`。先读 PROCESS 当前断点与最新条目，
+当前续接工作目录：`/workspace/ccpocket-sync-chain-followup`。
+分支：`codex/continue-sync-chain-extraction-20261011`；此前本机路径/分支是历史执行身份。先读 PROCESS 当前断点与最新条目，
 核对 HEAD/status；main、旧修复 checkout 或旧设备不能替代此处的验证身份。
 
 ## 修改前与修改后
@@ -35,6 +35,7 @@
 | stream 接受revision、socket终态ticket与新视觉清理 | StreamingStateCubit / 原 Cubit status 接点 | R37–R42/R46；旧mutation lease另看R48 |
 | quarantine map/bytes、FIFO快照、容量拒绝、remove/clear | runtime_overlay_quarantine.dart | R43/R44；admission/apply/accepted IDs仍在原Cubit，R47策略未审定 |
 | 拒绝已知不同runtime的status，不替换合法当前权限 | 原Cubit.updateDetachedProviderStatus，source/provider/thread后、时间/签名前 | R48；26项公开权限保护；缺字段旧组合R49另证 |
+| status观察时间/签名/local receipt、比较及统一clear | detached_status_observation.dart | R55/R57；Cubit仍核对资格/lease/queue，suspend保留观察 |
 | runtime 完成、stream 关闭与实际 layout | 原 Bridge/Service/Cubit streaming handler / layout | R09/R29/R35/R37；历史R29归因仍未知 |
 
 调度器只接受不可变的身份/观察值和三个窄回调：判断当前操作、执行既有修复、重新观察缓存。
@@ -346,3 +347,13 @@ C1i现已证明overlay自身capacity await-after replacement（R56 / E085）；�
 回退d67c8b92的测试部分不会移除C1h receipt产品修复；保留原catalog与新own-await正确性断言，不将临时坏策略应用到产品。
 Bridge build继承同原生产TS/依赖；Mobile full3412/4与83项仍精确归4e6d3d4a，不称本次重跑。
 强制child timeout后代进程树回收未独立验收；不触碰生产服务作为测试清理。下一C1j只补cached-only/订阅替换/未来authority证据，再决定原owner窄修。
+
+## C1j/C1k续接与结构回退
+
+当前完整接受输入659d，3422/4及93项、0 error/warning、1017 info逐项不变、格式与固定源码只读复核通过。
+本轮Linux原始证据在 `/workspace/ccpocket-review-evidence/20261011-sync-chain/`，同名JSON含实际命令/输入/UTC/hash。
+Bridge本次实际2528/21；结构批按相同tree继承，不用Mac历史2548/1替代Linux检查。
+93项精确命令见c1k-selected-93.json：terminal、queue、authority、commit_order、status_lifecycle及原实际receiver文件。
+完整复跑仍用上文concurrency=1与已构建的真实Bridge；云环境工具分别位于 `/workspace/toolchains/flutter/bin/` 和 `/workspace/toolchains/node22/node_modules/node/bin/`。
+观察设施修正337c5c5a和结构抽取659d分别提交；回退结构提交时同步更新owner文档/当前断点，保留原接收合同和先前行为修复。
+C2需补R47剩余证据，D需调用/支持版本矩阵；不将本批抽取接受写成整体完成。

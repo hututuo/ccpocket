@@ -110,3 +110,10 @@ READY timeout/非法JSON/缺字段owned清理仍R51，scope限测试；生产Bri
 
 R29历史FAIL与095cab00完整FAIL的直接归因仍未知；visual pending 256/257与无runtime ID的旧V2远端归属也未验收。
 真实Provider/设备/生产/发布各自NOT_RUN，原生UI自动化工具不可用仍BLOCKED，不能借源码门禁关闭。
+
+## 云端C1j与C1k续接
+
+C1j选定缓存/同源重试/合格receipt恢复合同已接受E092；观察设施按实际完整wire/SQL/catalog样本判定，合法status replay不能预设为空。
+成功定向/完整receiver实际无replay，suspend仍只读；实际new authority/低seq恢复、cached-only无票和canonical单次通过。有效新票的同business恢复另由公开合同验证。
+C1k随后只收拢已接受观察事实，固定659d完整3422/4及93项、静态/格式/只读复核通过；原权限与queue退休策略不迁入模块。
+R47整套旧/未来authority仍开放，尚未覆盖的真实producer重放/缓存与跨stream组合须分别建立可判定合同；C2/D不因选定PASS宣称完成。
