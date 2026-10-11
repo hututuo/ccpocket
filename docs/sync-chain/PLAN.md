@@ -29,7 +29,8 @@ main 已有未跟踪资料，不纳入本批、不覆盖；V4 是独立候选线
 | C1g | 实际same-ID process replacement与Bridge catalog capacity/public ACK组合已完成E077，只新增测试/harness | 固定911a4f60全量Bridge重放2547/1、typecheck/语法/只读review、错误保留敏感性及恢复通过；首次既有catalog timeout因果仍R53 |
 | C1h | 实际same-ID旧A/未观察B消费red→原SQL commit本地receipt窄修已完成E083（R54/R55） | 固定4e6d3d4a的83项/完整3412/4、诊断/格式/只读review；自然equal实际green、合法新B与canonical保留 |
 | C1i | 原overlay自身capacity await-after replacement证明已完成E085，只改测试harness/新增test | 固定d67c8b92完整2548/1、目标2项、类型/语法/只读review、移除post-await重查FAIL与hash恢复/2项PASS，R56 |
-| C1j | 下一证据批：无receipt cached-only/同源订阅替换与未来authority | 原SQL/status重读与订阅/页面事实分别证明；同/跨stream不能共用sequence order；可判定red保留后再在原owner修 |
+| C1j | 选定无receipt cached-only/同源订阅替换与receipt恢复合同已接受E092 | 实际wire/SQL/catalog完成分别观察；当前93项/完整3422/4与独立复核通过，R47整套策略仍不据此关闭 |
+| C1k | 收拢detached status观察的时间、签名、本地receipt及统一失效 | 保持原资格/权限/queue退休规则；抽取前后同输入93项、全量Mobile、静态/格式与固定源码复核 |
 | C2 | 按领域逐批抽 Bridge handler | 连接、认证、序列、权限归属不重复实现 |
 | D | 按调用/版本矩阵退役旧分支，更新唯一文档入口 | 确认路径无支持用途；删除对应状态与文档，而非只藏入口 |
 
@@ -45,7 +46,8 @@ C1b 已在原投影模块收拢 canonical 候选准备/接受，并保留 Cubit 
 C1f已证明未观察authority时的合法等待与canonical单次接替（R50），三个自建process失败出口有真实退出合同（R51）。
 C1g已证明Bridge原callback与catalog capacity/public ACK组合（R52），未改生产路径。
 C1h已在原owner按真实SQL commit顺序窄修Mobile旧A/新B消费，完整门禁见E083；
-C1i已补overlay自身await-after replacement（R56），原生产逻辑保持；下一C1j审无receipt/订阅切换边界。R47未闭合前不扩大到C2 handler迁移。
+C1i已补overlay自身await-after replacement（R56），原生产逻辑保持；C1j选定缓存/订阅/恢复合同已过E092门禁。
+下一C1k只迁移观察状态owner，Cubit保留身份资格、控制lease、队列应用与退休策略。R47未闭合前不扩大到C2 handler迁移。
 新全量重放2547/1不关闭首次catalog watcher timeout（R53），旧失败保留原期限、日志和精确输入。
 无ID远端归属和visual overflow仍不得当已审定策略迁移。
 当前默认并发四文件重放50 PASS不关闭旧失败；

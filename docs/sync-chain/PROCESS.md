@@ -2184,3 +2184,16 @@ cached-only前停并join拥有的Service，再读取实际SQL冻结状态，核�
 
 C1j选定cached/retry/receipt合同接受；R47整体旧/未来authority策略、R45/R49与历史未知仍开放，C2/D未完成。
 下一C1k仅迁移已验证的status观察职责；scope与owner责任先登记，再实施纯结构变更。
+
+## E093 — C1k状态观察单owner的结构批计划
+
+父提交337c5c5a3d0b30569f5ca76a4de30f8d2cd49b49 clean，C1j产品/最终test与E092完整门禁输入相同；只多本批账本。
+本批迁移ChatSessionCubit的status observedAt、signature、commitReceipt三项及其比较/record/refresh/clear到DetachedStatusObservation。
+签名保留原13项raw字段、顺序和null编码；严格旧时刻拒绝、同source/substream非后继receipt拒绝、跨sub低seq接纳均不变。
+runtime/source/null三个原reset接点统一clear；suspend保留已提交观察并撤lease，不能误改为清缓存或恢复authority。
+原Cubit继续解析/核对provider、source、runtime和receipt资格，决定duplicate时是否需重建owner，以及权限、投影/queue应用和历史fallback。
+模块不接收完整Cubit、不写SQL/发wire、不建第二总线、不持有控制lease或推广未审定R47/R49政策。
+
+先用原93项公开合同和真实receiver验证结构前后一致，完整Mobile/analyze/变更format、根审及固定源码独立复核通过才接受。
+原Bridge/协议/SessionList/Updater/Repository/依赖不变，Bridge门禁按精确相同tree保留E092实际结果。
+回退本批结构提交可恢复原私有字段与分支，不撤C1j观察合同或先前C1h/C1j行为修复。
