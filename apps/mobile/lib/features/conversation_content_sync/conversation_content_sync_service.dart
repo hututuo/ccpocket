@@ -232,7 +232,7 @@ class ConversationContentSyncService with WidgetsBindingObserver {
   final Map<String, _AutomaticLatestTurnRepairState>
   _automaticLatestTurnRepairs = {};
   final Map<String, Timer> _automaticLatestTurnRepairRetryTimers = {};
-  final Map<String, String> _automaticTurnsPageRepairRevisionByTarget = {};
+  final Map<String, String> _automaticTurnsPageRepairFingerprintByTarget = {};
   String? _focusedRefreshFlightKey;
   Future<void>? _focusedRefreshFlight;
   Completer<void>? _focusedRefreshCancellation;
@@ -1412,7 +1412,10 @@ class ConversationContentSyncService with WidgetsBindingObserver {
     required String providerSessionId,
     required String revision,
     required ConversationSyncV2LatestTurnGap gap,
+    required String windowFingerprint,
   }) {
+    final focusGeneration = _focusIntentGeneration;
+    final expectedDataSourceIdentity = currentDataSourceIdentity;
     final focused = _focused;
     if (focused?.provider != provider ||
         focused?.providerSessionId != providerSessionId ||
@@ -1432,7 +1435,8 @@ class ConversationContentSyncService with WidgetsBindingObserver {
       providerSessionId: providerSessionId,
     );
     if (gap.repair == 'turns_page' &&
-        _automaticTurnsPageRepairRevisionByTarget[targetKey] == revision) {
+        _automaticTurnsPageRepairFingerprintByTarget[targetKey] ==
+            windowFingerprint) {
       return;
     }
     final previous = _automaticLatestTurnRepairs[key];
@@ -1463,6 +1467,7 @@ class ConversationContentSyncService with WidgetsBindingObserver {
     scheduleMicrotask(() {
       if (_disposed ||
           generation != _generation ||
+          focusGeneration != _focusIntentGeneration ||
           target.fingerprint != _cacheTarget.fingerprint ||
           _focused?.provider != provider ||
           _focused?.providerSessionId != providerSessionId) {
@@ -1473,8 +1478,15 @@ class ConversationContentSyncService with WidgetsBindingObserver {
         repairLatestTurn(
               provider: provider,
               providerSessionId: providerSessionId,
+              expectedDataSourceIdentity: expectedDataSourceIdentity,
             )
             .then((result) {
+              if (_disposed ||
+                  generation != _generation ||
+                  focusGeneration != _focusIntentGeneration ||
+                  target.fingerprint != _cacheTarget.fingerprint) {
+                return;
+              }
               conversationSyncTrace(
                 '[conversation_sync_v2] event=latest_turn_auto_repair_complete '
                 'target=${conversationSyncTargetTrace(provider, providerSessionId)} '
@@ -1482,10 +1494,7 @@ class ConversationContentSyncService with WidgetsBindingObserver {
               );
               final state = _automaticLatestTurnRepairs.remove(key);
               _automaticLatestTurnRepairRetryTimers.remove(key)?.cancel();
-              if (gap.repair == 'turns_page' && result.loaded) {
-                _rememberAutomaticTurnsPageRepair(targetKey, revision);
-              }
-              if (state?.dirty == true && !result.loaded) {
+              if (state?.dirty == true) {
                 _scheduleAutomaticLatestTurnRepairFromCache(
                   ConversationContentTarget(
                     provider: provider,
@@ -1495,6 +1504,12 @@ class ConversationContentSyncService with WidgetsBindingObserver {
               }
             })
             .catchError((Object error) {
+              if (_disposed ||
+                  generation != _generation ||
+                  focusGeneration != _focusIntentGeneration ||
+                  target.fingerprint != _cacheTarget.fingerprint) {
+                return;
+              }
               conversationSyncTrace(
                 '[conversation_sync_v2] event=latest_turn_auto_repair_failed '
                 'target=${conversationSyncTargetTrace(provider, providerSessionId)} '
@@ -1520,6 +1535,12 @@ class ConversationContentSyncService with WidgetsBindingObserver {
                 _automaticLatestTurnRepairRetryTimers[key] = Timer(
                   retryDelay,
                   () {
+                    if (_disposed ||
+                        generation != _generation ||
+                        focusGeneration != _focusIntentGeneration ||
+                        target.fingerprint != _cacheTarget.fingerprint) {
+                      return;
+                    }
                     _automaticLatestTurnRepairRetryTimers.remove(key);
                     final retryState = _automaticLatestTurnRepairs[key];
                     if (retryState == null || retryState.running) return;
@@ -1566,13 +1587,28 @@ class ConversationContentSyncService with WidgetsBindingObserver {
     required String providerSessionId,
   }) => '${target.fingerprint}\u0000$provider\u0000$providerSessionId';
 
-  void _rememberAutomaticTurnsPageRepair(String targetKey, String revision) {
-    _automaticTurnsPageRepairRevisionByTarget
+  // Partial live patches retain their canonical revision. Use the committed
+  // body and gap, excluding commit time, so new content can repair while an
+  // identical replay (including the repair's own additions) stays bounded.
+  static String _automaticTurnsPageRepairFingerprint(
+    ConversationHotWindowSnapshot snapshot,
+  ) => jsonEncode([
+    snapshot.revision,
+    snapshot.latestTurnGap?.toJson(),
+    snapshot.sourceEntryCount,
+    conversationPresentationRevision(snapshot),
+  ]);
+
+  void _rememberAutomaticTurnsPageRepair(
+    String targetKey,
+    ConversationHotWindowSnapshot snapshot,
+  ) {
+    _automaticTurnsPageRepairFingerprintByTarget
       ..remove(targetKey)
-      ..[targetKey] = revision;
-    while (_automaticTurnsPageRepairRevisionByTarget.length > 128) {
-      _automaticTurnsPageRepairRevisionByTarget.remove(
-        _automaticTurnsPageRepairRevisionByTarget.keys.first,
+      ..[targetKey] = _automaticTurnsPageRepairFingerprint(snapshot);
+    while (_automaticTurnsPageRepairFingerprintByTarget.length > 128) {
+      _automaticTurnsPageRepairFingerprintByTarget.remove(
+        _automaticTurnsPageRepairFingerprintByTarget.keys.first,
       );
     }
   }
@@ -1591,7 +1627,7 @@ class ConversationContentSyncService with WidgetsBindingObserver {
       _automaticLatestTurnRepairRetryTimers.remove(key)?.cancel();
       _automaticLatestTurnRepairs.remove(key);
     }
-    _automaticTurnsPageRepairRevisionByTarget.remove(
+    _automaticTurnsPageRepairFingerprintByTarget.remove(
       _automaticLatestTurnRepairTargetKey(
         target: target,
         provider: provider,
@@ -1606,7 +1642,7 @@ class ConversationContentSyncService with WidgetsBindingObserver {
     }
     _automaticLatestTurnRepairRetryTimers.clear();
     _automaticLatestTurnRepairs.clear();
-    _automaticTurnsPageRepairRevisionByTarget.clear();
+    _automaticTurnsPageRepairFingerprintByTarget.clear();
   }
 
   void _scheduleAutomaticLatestTurnRepairFromCache(
@@ -1619,11 +1655,13 @@ class ConversationContentSyncService with WidgetsBindingObserver {
       return;
     }
     final generation = _generation;
+    final focusGeneration = _focusIntentGeneration;
     final target = _cacheTarget;
     _trackBackgroundFlight(
       Future<void>.microtask(() async {
         if (_disposed ||
             generation != _generation ||
+            focusGeneration != _focusIntentGeneration ||
             target.fingerprint != _cacheTarget.fingerprint ||
             !_sameTarget(_focused, focused)) {
           return;
@@ -1640,6 +1678,8 @@ class ConversationContentSyncService with WidgetsBindingObserver {
               gap == null ||
               !_isAutoRepairableLatestTurnGap(gap) ||
               generation != _generation ||
+              focusGeneration != _focusIntentGeneration ||
+              target.fingerprint != _cacheTarget.fingerprint ||
               !_sameTarget(_focused, focused)) {
             return;
           }
@@ -1650,6 +1690,7 @@ class ConversationContentSyncService with WidgetsBindingObserver {
             providerSessionId: focused.providerSessionId,
             revision: snapshot.revision,
             gap: gap,
+            windowFingerprint: _automaticTurnsPageRepairFingerprint(snapshot),
           );
         } catch (error) {
           conversationSyncTrace(
@@ -1979,6 +2020,7 @@ class ConversationContentSyncService with WidgetsBindingObserver {
       provider: provider,
       providerSessionId: providerSessionId,
       revision: snapshot.revision,
+      windowFingerprint: _automaticTurnsPageRepairFingerprint(snapshot),
       repair: repair,
       turnId: repair == 'items_page' ? gap.turnId : null,
       maximumBytes: maximumBytes,
@@ -3042,19 +3084,6 @@ class ConversationContentSyncService with WidgetsBindingObserver {
             revision: committedRevision,
             lastAssistantOutputAt: committed.lastAssistantOutputAt,
           );
-          if (isFocused &&
-              event.latestTurnComplete == false &&
-              event.latestTurnGap != null &&
-              _isAutoRepairableLatestTurnGap(event.latestTurnGap!)) {
-            _scheduleAutomaticLatestTurnRepair(
-              generation: generation,
-              target: target,
-              provider: event.provider!,
-              providerSessionId: event.providerSessionId!,
-              revision: committedRevision,
-              gap: event.latestTurnGap!,
-            );
-          }
         }
       case ConversationSyncV2EventKind.runtimeOverlay:
         if (_activeSubscriptionId != event.subscriptionId) {
@@ -3211,6 +3240,20 @@ class ConversationContentSyncService with WidgetsBindingObserver {
           } else {
             ConversationHotWindowSnapshot? snapshot;
             try {
+              final current = await cache.loadConversationWindow(
+                target: target,
+                provider: event.provider!,
+                providerSessionId: event.providerSessionId!,
+              );
+              if (!_isV2Current(event, generation, target)) return;
+              // Partial patches can change the latest turn without changing
+              // its canonical revision. Retry from that newer window rather
+              // than treating an old summary as a repair of the new gap.
+              if (current == null ||
+                  _automaticTurnsPageRepairFingerprint(current) !=
+                      latestTurnRequest.windowFingerprint) {
+                throw const _ConversationPagingInterrupted();
+              }
               snapshot = await cache.replaceConversationLatestTurnsRepairPage(
                 target: target,
                 provider: event.provider!,
@@ -3242,6 +3285,18 @@ class ConversationContentSyncService with WidgetsBindingObserver {
                 );
               }
             } else {
+              if (_isV2Current(event, generation, target)) {
+                // Record the exact response commit, not a later async cache
+                // read that might already contain another live update.
+                _rememberAutomaticTurnsPageRepair(
+                  _automaticLatestTurnRepairTargetKey(
+                    target: target,
+                    provider: event.provider!,
+                    providerSessionId: event.providerSessionId!,
+                  ),
+                  snapshot,
+                );
+              }
               if (!latestTurnRequest.completer.isCompleted) {
                 latestTurnRequest.completer.complete(
                   _LatestTurnRepairPageResult(
@@ -3250,26 +3305,24 @@ class ConversationContentSyncService with WidgetsBindingObserver {
                   ),
                 );
               }
-              if (snapshot.latestTurnComplete) {
-                _publishCacheUpdate(
-                  ConversationContentCacheUpdate(
-                    targetFingerprint: target.fingerprint,
-                    provider: event.provider!,
-                    providerSessionId: event.providerSessionId!,
-                    revision:
-                        '${snapshot.revision}:'
-                        '${snapshot.entries.length}:'
-                        '${snapshot.cachedAt.microsecondsSinceEpoch}',
-                  ),
-                );
-                publish = ConversationSyncCacheUpdate(
-                  kind: ConversationSyncCacheUpdateKind.timeline,
+              _publishCacheUpdate(
+                ConversationContentCacheUpdate(
                   targetFingerprint: target.fingerprint,
-                  provider: event.provider,
-                  providerSessionId: event.providerSessionId,
-                  revision: snapshot.revision,
-                );
-              }
+                  provider: event.provider!,
+                  providerSessionId: event.providerSessionId!,
+                  revision:
+                      '${snapshot.revision}:'
+                      '${snapshot.entries.length}:'
+                      '${snapshot.cachedAt.microsecondsSinceEpoch}',
+                ),
+              );
+              publish = ConversationSyncCacheUpdate(
+                kind: ConversationSyncCacheUpdateKind.timeline,
+                targetFingerprint: target.fingerprint,
+                provider: event.provider,
+                providerSessionId: event.providerSessionId,
+                revision: snapshot.revision,
+              );
             }
           }
         } else {
@@ -4548,6 +4601,7 @@ class _PendingLatestTurnRepairPage {
     required this.provider,
     required this.providerSessionId,
     required this.revision,
+    required this.windowFingerprint,
     required this.repair,
     required this.turnId,
     required this.maximumBytes,
@@ -4560,6 +4614,7 @@ class _PendingLatestTurnRepairPage {
   final String provider;
   final String providerSessionId;
   final String revision;
+  final String windowFingerprint;
   final String repair;
   final String? turnId;
   final int maximumBytes;
