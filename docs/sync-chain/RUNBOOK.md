@@ -1,5 +1,7 @@
 # 接手、修改与验证操作说明
 
+> **FROZEN — 2026-10-19**：本项目已暂停开发。后续路线与本机路径仅供恢复参考，当前不执行；冻结入口见根目录FREEZE.md。
+
 当前续接工作目录：`/workspace/ccpocket-sync-chain-followup`。
 分支：`codex/continue-sync-chain-extraction-20261011`；此前本机路径/分支是历史执行身份。先读 PROCESS 当前断点与最新条目，
 核对 HEAD/status；main、旧修复 checkout 或旧设备不能替代此处的验证身份。

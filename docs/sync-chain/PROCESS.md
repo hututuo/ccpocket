@@ -4,7 +4,7 @@
 
 - 冻结：2026-10-19（Asia/Shanghai），PAUSED_BY_USER；完成保全与本地清理后停止，用户明确恢复前不推进后续开发。见根目录FREEZE.md和私有冻结回执。
 - 时间：2026-10-11T11:09:15.216316+08:00；旧条目保留各自当时的证据。
-- 冻结分支：`codex/continue-sync-chain-extraction-20261011`；worktree `/workspace/ccpocket-sync-chain-followup`，仅本地提交。
+- 冻结分支：`codex/continue-sync-chain-extraction-20261011`；此前worktree `/workspace/ccpocket-sync-chain-followup`仅为历史执行路径；冻结跟进头已上传，本地副本状态以私有最终清理回执为准。
 - 续接基线：保存头6d435d3a，来自原4aa0脱敏历史；C1j观察修正337c5c5a，C1k纯结构源码/测试固定 `659d44926b7a66e4161aed68344198dcca5c79ee`。
 - 当前选定接受：C1j缓存/订阅/receipt合同、C1k状态观察owner；原A/B/C1a–C1i既有范围保留，整体重构未结束。
 - C1k实际完整Mobile：3422 PASS / 4 SKIP，527.738秒，concurrency=1，clean固定SHA输入/输出相同；抽取前C1j完整也是3422/4（531.101秒）。
@@ -13,7 +13,7 @@
 - 新模块独占status时间/13字段签名/local receipt；原Cubit保留身份资格、authority lease、queue接纳/退休和投影。责任见DETACHED-STATUS-OBSERVATION。
 - C2/D仍未完成；R47整体旧/未来策略、R45 visual 256/257、R49无runtime ID旧组合仍开放。R47未闭合前不扩大Bridge handler迁移。
 - 原4aa0 92/1直接原因仍UNKNOWN，缺原始本机raw log；本轮可定位FAIL另保留。历史R29/095cab00/R53与真实Provider/设备/部署/发布不借本次源码PASS关闭。
-- 原始/repair worktrees与并列e0e5缺口续修保留；最新精确收据见ACCEPTANCE的supplementalC1j/C1k。
+- 原始/repair源码与并列e0e5缺口续修均已远端保存；本地工作副本按用户冻结要求清理；最新精确收据见ACCEPTANCE的supplementalC1j/C1k。
 
 ## E001 — 建立隔离执行与文档
 

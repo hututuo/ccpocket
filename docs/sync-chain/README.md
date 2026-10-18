@@ -1,5 +1,7 @@
 # 消息链路梳理与渐进抽取
 
+> **FROZEN — 2026-10-19**：本项目已暂停开发。后续路线与本机路径仅供恢复参考，当前不执行；冻结入口见根目录FREEZE.md。
+
 当前沿原方案续接功能抽取与重构，活动分支 `codex/continue-sync-chain-extraction-20261011`。
 C1j选定缓存/订阅/receipt合同已恢复完整门禁，C1k已把status时间、签名、本地提交凭据及统一失效抽成独立owner。
 固定产品/测试源码 `659d44926b7a66e4161aed68344198dcca5c79ee`：完整Mobile **3422 PASS / 4 SKIP**、定向93 PASS，

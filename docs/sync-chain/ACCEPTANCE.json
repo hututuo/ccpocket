@@ -1154,7 +1154,10 @@
     "workspace": "/workspace/ccpocket-sync-chain-followup",
     "savedBaseSha": "6d435d3a4ac085b56b82b055db70018a352901da",
     "validatedSourceAndTestSha": "659d44926b7a66e4161aed68344198dcca5c79ee",
-    "publication": "LOCAL_ONLY_NOT_PUSHED"
+    "publication": "FOLLOWUP_BRANCHES_PUSHED_EXACT_SHA_VERIFIED",
+    "developmentStatus": "FROZEN_PAUSED_BY_USER",
+    "freezeDate": "2026-10-19",
+    "workspaceStatus": "HISTORICAL_PATH_PENDING_VERIFIED_CLEANUP"
   },
   "supplementalC1j": {
     "registeredCheckpointSha": "337c5c5a3d0b30569f5ca76a4de30f8d2cd49b49",
