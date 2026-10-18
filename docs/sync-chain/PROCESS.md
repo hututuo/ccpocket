@@ -2,8 +2,9 @@
 
 ## 当前断点
 
+- 冻结：2026-10-19（Asia/Shanghai），PAUSED_BY_USER；完成保全与本地清理后停止，用户明确恢复前不推进后续开发。见根目录FREEZE.md和私有冻结回执。
 - 时间：2026-10-11T11:09:15.216316+08:00；旧条目保留各自当时的证据。
-- 活动分支：`codex/continue-sync-chain-extraction-20261011`；worktree `/workspace/ccpocket-sync-chain-followup`，仅本地提交。
+- 冻结分支：`codex/continue-sync-chain-extraction-20261011`；worktree `/workspace/ccpocket-sync-chain-followup`，仅本地提交。
 - 续接基线：保存头6d435d3a，来自原4aa0脱敏历史；C1j观察修正337c5c5a，C1k纯结构源码/测试固定 `659d44926b7a66e4161aed68344198dcca5c79ee`。
 - 当前选定接受：C1j缓存/订阅/receipt合同、C1k状态观察owner；原A/B/C1a–C1i既有范围保留，整体重构未结束。
 - C1k实际完整Mobile：3422 PASS / 4 SKIP，527.738秒，concurrency=1，clean固定SHA输入/输出相同；抽取前C1j完整也是3422/4（531.101秒）。
@@ -2207,3 +2208,10 @@ c1k-mobile-analyze 0 error/warning、1017 info（31.442秒），severity/file/�
 
 C1k观察职责抽取接受，不将整体重构标为完成。C2先补R47尚未接受的真实缓存/订阅/未来authority组合，D先核对支持版本与调用矩阵；R45/R49与历史UNKNOWN各自保留。
 本批source、测试观察修正和接受文档分别提交；结构回退适配原Cubit字段，并保留C1j观察合同及先前行为修复。
+
+## E095 — 用户要求冻结与暂停开发
+
+2026-10-19用户要求本地应保留内容先上传，再删除本地副本，文档登记后暂停。
+本批只变更冻结/恢复文档，产品lib/test/Bridge/依赖与d3a7ed49保持相同；沿用各自精确历史验证，不重新开发或冒称新产品门禁。
+源码两条跟进分支分别上传，历史WIP与私人审查归档保持分离；私有资料保存原始证据、精确远端身份、清理清单和恢复步骤。
+仅在远端SHA/归档完整性核对后清理本执行环境的项目副本；main、原repair候选、运行服务、设备、其他项目和用户其他电脑不改。

@@ -1,5 +1,7 @@
 # CC Pocket Compatibility Fork Project Index
 
+> **FROZEN — 2026-10-19（Asia/Shanghai）**：用户已暂停开发。当前冻结入口为 [FREEZE.md](FREEZE.md)，下方旧状态仅作历史参考；用户明确恢复前不推进开发或发布。
+
 | Path or ref | Type | Purpose | Deletable | Status |
 |---|---|---|---|---|
 | `notes/repository-single-root-consolidation_v01_20260809-144837.md` / `refs/archive/ccpocket/consolidation-20260809/*` | Canonical repository convergence | Make `ccpocket-compat/main` the single CC Pocket Git project; preserve exact historical tips while removing stale worktrees/branches and the second standalone repository | No | `accepted`; Codex project `2feff566-9790-4adc-925a-01b2e5907182`, `isGitRepository=true`; 22 checkouts/22 branches reduced to 2 checkouts/2 branches; about 3.87 GiB released; runtime, OTA, IPA, Cloud and phone data unchanged |

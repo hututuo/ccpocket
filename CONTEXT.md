@@ -1,5 +1,7 @@
 # CC Pocket Compatibility Fork Context
 
+> **FROZEN — 2026-10-19（Asia/Shanghai）**：用户已暂停开发。当前冻结入口为 [FREEZE.md](FREEZE.md)，下方旧状态仅作历史参考；用户明确恢复前不推进开发或发布。
+
 ## 2026-08-09 single Git root and canonical main
 
 CC Pocket now has one source Git root:
